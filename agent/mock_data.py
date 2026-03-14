@@ -56,7 +56,7 @@ RECALL_LIST = [
     },
     {
         "name": "Eddy Kim",
-        "phone": "+10000000000",  # TODO: update with Eddy's real number
+        "phone": "+13852926330",
         "treatment_needed": "cleaning",
         "cycles_overdue": 3,
         "reliability_score": 0.95,
