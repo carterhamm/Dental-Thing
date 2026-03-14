@@ -21,6 +21,7 @@ from agent.state import (
     SLOT_TRANSITIONS,
     is_terminal_status,
 )
+from agent.mock_data import RECALL_LIST, DEMO_SLOT
 
 __all__ = [
     "score_candidate",
