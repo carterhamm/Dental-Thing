@@ -27,6 +27,16 @@ RECALL_LIST = [
         "preferred_time_of_day": "afternoon",
         "pending_treatment": False,
     },
+    {
+        "name": "Spencer Hammond",
+        "phone": "+17195053575",
+        "dob": "May 10, 1998",
+        "treatment_needed": "cleaning",
+        "cycles_overdue": 2,
+        "reliability_score": 0.90,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
+    },
     # --- High priority cleaning patients ---
     {
         "name": "Sarah Kim",

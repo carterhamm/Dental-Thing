@@ -188,8 +188,9 @@ async def reset_demo():
 
 async def run_orchestrator():
     """Start the Claude orchestrator in background."""
-    global _is_running, _last_error
+    global _is_running, _last_error, _current_slot
     try:
+        _current_slot = DEMO_SLOT.copy()
         orch = get_orchestrator()
         # run_step is sync (calls Anthropic API) — run in thread pool
         await asyncio.to_thread(orch.start, DEMO_SLOT)
@@ -401,25 +402,22 @@ ELEVENLABS_AGENT_ID = os.environ.get("ELEVENLABS_AGENT_ID", "")
 
 ELEVENLABS_PHONE_NUMBER_ID = os.environ.get("ELEVENLABS_PHONE_NUMBER_ID", "")
 
+# Store the current slot globally so all calls can access it
+_current_slot: dict = {}
+
 
 def trigger_voice_call(patient: dict):
-    """Trigger outbound voice call via ElevenLabs Conversational AI + Twilio.
-
-    Uses POST /v1/convai/twilio/outbound-call
-    Requires: ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, ELEVENLABS_PHONE_NUMBER_ID
-    """
+    """Trigger outbound voice call via ElevenLabs Conversational AI + Twilio."""
     if not ELEVENLABS_API_KEY or not ELEVENLABS_AGENT_ID or not ELEVENLABS_PHONE_NUMBER_ID:
         print(f"[NO ELEVENLABS] Would call {patient['name']} at {patient['phone']}")
-        print(f"  API_KEY={'set' if ELEVENLABS_API_KEY else 'MISSING'}")
-        print(f"  AGENT_ID={ELEVENLABS_AGENT_ID or 'MISSING'}")
-        print(f"  PHONE_NUMBER_ID={ELEVENLABS_PHONE_NUMBER_ID or 'MISSING'}")
         return
 
     import requests
-    # Get slot info from the orchestrator for dynamic variables
-    slot = {}
-    if _orchestrator:
+    # Get slot from global store or orchestrator
+    slot = _current_slot.copy()
+    if not slot and _orchestrator:
         slot = getattr(_orchestrator, 'slot', {}) or {}
+    print(f"[ELEVENLABS] Calling {patient['name']} with slot={slot}")
 
     resp = requests.post(
         "https://api.elevenlabs.io/v1/convai/twilio/outbound-call",
