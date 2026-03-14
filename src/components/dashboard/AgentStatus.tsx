@@ -10,7 +10,7 @@ interface Props {
 }
 
 const PHASE_CFG: Record<AgentPhase, { label: string; color: string; dotColor: string; desc: string; borderColor: string }> = {
-  idle:       { label: 'STANDBY',     color: 'text-slate-400',   dotColor: 'bg-slate-300', desc: 'Waiting for cancellation...', borderColor: 'border-slate-200' },
+  idle:       { label: 'STANDBY',     color: 'text-slate-400',   dotColor: 'bg-slate-300', desc: 'Ready to fill slots', borderColor: 'border-slate-200' },
   calling:    { label: 'CALLING',     color: 'text-[#006B7A]',   dotColor: 'bg-[#7DF9FF]', desc: 'Calling via Twilio', borderColor: 'border-[#7DF9FF]/40' },
   no_answer:  { label: 'NO ANSWER',   color: 'text-amber-600',   dotColor: 'bg-amber-400', desc: 'No answer — switching to SMS', borderColor: 'border-amber-200' },
   sms_sent:   { label: 'TEXTING',     color: 'text-purple-600',  dotColor: 'bg-purple-400', desc: 'Waiting for text reply', borderColor: 'border-purple-200' },

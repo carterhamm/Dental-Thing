@@ -300,12 +300,23 @@ class Orchestrator:
 
     def handle_outcome(self, candidate_name: str, outcome: str) -> str:
         """Handle a webhook outcome. Re-invokes Claude to decide next steps."""
-        for i, c in enumerate(self.candidates):
-            if c["name"] == candidate_name:
-                self.candidates = update_candidate_status(self.candidates, i, outcome)
-                self.current_index = i
-                update_candidates(self.candidates)
-                break
+        # First, try to use current_index if it matches the name (avoids duplicate name issues)
+        matched_index = None
+        if 0 <= self.current_index < len(self.candidates):
+            if self.candidates[self.current_index]["name"] == candidate_name:
+                matched_index = self.current_index
+
+        # Fall back to searching by name if current_index doesn't match
+        if matched_index is None:
+            for i, c in enumerate(self.candidates):
+                if c["name"] == candidate_name:
+                    matched_index = i
+                    break
+
+        if matched_index is not None:
+            self.candidates = update_candidate_status(self.candidates, matched_index, outcome)
+            self.current_index = matched_index
+            update_candidates(self.candidates)
 
         outcome_label = {
             "confirmed": "confirmed",
@@ -317,12 +328,16 @@ class Orchestrator:
 
         if outcome == "confirmed":
             return self.run_step(f"{candidate_name} confirmed! Book the appointment.")
+        elif outcome == "declined":
+            return self.run_step(
+                f"{candidate_name} DECLINED the appointment. DO NOT book them. "
+                f"Move to the next candidate. Call decide_next_action with index {self.current_index}."
+            )
         else:
             return self.run_step(
                 f"Outcome for {candidate_name}: {outcome_label}. "
-                f"Current candidates: {self.candidates}. "
                 f"Current index: {self.current_index}. "
-                f"Decide what to do next."
+                f"Call decide_next_action to determine the next step."
             )
 
     def give_up(self) -> None:
