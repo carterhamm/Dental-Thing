@@ -7,6 +7,8 @@ import { PatientQueue } from './components/dashboard/PatientQueue';
 import type { Patient } from './components/dashboard/PatientQueue';
 import { ActivityLog } from './components/dashboard/ActivityLog';
 import type { LogEntry } from './components/dashboard/ActivityLog';
+import { DailySchedule } from './components/dashboard/DailySchedule';
+import type { ScheduleSlot } from './components/dashboard/DailySchedule';
 import { StatsBar } from './components/dashboard/StatsBar';
 import { IconCheck, IconDollar, IconPhone, IconMessage, IconTooth } from './components/Icons';
 import {
@@ -15,6 +17,7 @@ import {
   onAgentChange,
   onCandidatesChange,
   onActivityChange,
+  onScheduleChange,
 } from './lib/firestore';
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'https://dental-agent-production.up.railway.app';
@@ -74,6 +77,7 @@ function App() {
   const [phase, setPhase] = useState<AgentPhase>('idle');
   const [patients, setPatients] = useState<Patient[]>([]);
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [schedule, setSchedule] = useState<ScheduleSlot[]>([]);
   const [slotStatus, setSlotStatus] = useState<'open' | 'booking' | 'filled'>('open');
   const [slotTime, setSlotTime] = useState('—');
   const [slotFilledBy, setSlotFilledBy] = useState<string | undefined>();
@@ -117,6 +121,9 @@ function App() {
           message: a.text,
           type: actType(a.type),
         })));
+      }),
+      onScheduleChange((data) => {
+        setSchedule(data?.slots || []);
       }),
     ];
     return () => unsubs.forEach(u => u());
@@ -223,7 +230,7 @@ function App() {
       {/* Views */}
       <main className="flex-1 px-5 pt-4 pb-5 overflow-hidden">
         {view === 'dashboard' && (
-          <div className="h-full grid grid-cols-4 gap-4 animate-fadeIn" style={{ gridTemplateRows: '88px minmax(240px, 1fr) minmax(0, 2fr)' }}>
+          <div className="h-full grid grid-cols-4 gap-4 animate-fadeIn" style={{ gridTemplateRows: '88px 1fr 1fr 180px' }}>
             <StatsBar stats={[
               { label: 'Filled', value: filledCount, accent: 'green', icon: <IconCheck /> },
               { label: 'Recovered', value: `$${recovered}`, accent: 'gray', icon: <IconDollar /> },
@@ -231,9 +238,10 @@ function App() {
               { label: 'Texts', value: smsCount, accent: 'purple', icon: <IconMessage /> },
             ]} />
             <div className="col-span-2"><CancellationSlot status={slotStatus} bookedBy={slotFilledBy} slotTime={slotTime} /></div>
-            <div className="col-span-2"><AgentStatus phase={phase} currentPatient={currentPatient} attempt={attemptNum} totalPatients={patients.length} /></div>
-            <div className="col-span-2"><PatientQueue patients={patients} /></div>
-            <div className="col-span-2"><ActivityLog entries={log} /></div>
+            <div className="col-span-1"><AgentStatus phase={phase} currentPatient={currentPatient} attempt={attemptNum} totalPatients={patients.length} /></div>
+            <div className="col-span-1 row-span-2"><DailySchedule slots={schedule} /></div>
+            <div className="col-span-3"><PatientQueue patients={patients} /></div>
+            <div className="col-span-4"><ActivityLog entries={log} /></div>
           </div>
         )}
         {view === 'patients' && (

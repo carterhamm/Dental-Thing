@@ -36,8 +36,11 @@ from agent.firestore import (
     add_activity,
     update_agent_status,
     update_slot_status,
+    seed_schedule,
+    update_schedule_slot,
 )
 from agent.mock_data import DEMO_SLOT
+from agent.mock_schedule import CANCELLED_SLOT_ID
 from orchestrator import Orchestrator
 
 
@@ -84,6 +87,7 @@ def _init_firebase():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _init_firebase()
+    seed_schedule()
     yield
 
 
@@ -215,6 +219,9 @@ async def handle_outcome_bg(patient_name: str, outcome: str):
                 c["status"] in ("declined", "no_answer", "no_reply", "confirmed")
                 for c in orch.candidates
             )
+            # When slot is filled, also update the daily schedule
+            if any_confirmed:
+                update_schedule_slot(CANCELLED_SLOT_ID, patient_name)
             if any_confirmed or all_terminal:
                 _is_running = False
     except Exception as e:

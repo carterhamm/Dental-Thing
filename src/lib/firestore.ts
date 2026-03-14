@@ -43,6 +43,19 @@ export interface ActivityData {
   timestamp: any;
 }
 
+export interface ScheduleSlot {
+  id: string;
+  time: string;
+  treatment: string;
+  status: 'booked' | 'cancelled' | 'filled';
+  patient_name: string | null;
+  value: number;
+}
+
+export interface ScheduleData {
+  slots: ScheduleSlot[];
+}
+
 // --- Seed / Initialize ---
 
 export async function seedSessionData() {
@@ -90,4 +103,10 @@ export function onActivityChange(cb: (entries: ActivityData[]) => void) {
   return onSnapshot(q, (snap) => {
     cb(snap.docs.map(d => d.data() as ActivityData));
   }, () => cb([]));
+}
+
+export function onScheduleChange(cb: (data: ScheduleData | null) => void) {
+  return onSnapshot(doc(db, 'schedule', 'today'), (snap) => {
+    cb(snap.exists() ? (snap.data() as ScheduleData) : null);
+  }, () => cb(null));
 }
