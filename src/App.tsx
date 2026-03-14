@@ -18,7 +18,6 @@ import {
   onCandidatesChange,
   onActivityChange,
   onScheduleChange,
-  onCallStatusChange,
 } from './lib/firestore';
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'https://dental-agent-production.up.railway.app';
@@ -41,17 +40,14 @@ function mapCandidateStatus(s: string): Patient['status'] {
   return m[s] || 'queued';
 }
 
-function derivePhase(agentStatus: string, candidates: Patient[], callStatus: string): AgentPhase {
+function derivePhase(agentStatus: string, candidates: Patient[]): AgentPhase {
   if (agentStatus === 'complete') return 'filled';
   if (agentStatus === 'failed') return 'idle';
   if (agentStatus !== 'running') return 'idle';
-  // Use real Twilio call status when available
-  if (callStatus === 'ringing' || callStatus === 'in-progress') return 'calling';
   const active = candidates.find(c => c.status === 'calling' || c.status === 'sms_sent');
+  if (active?.status === 'calling') return 'calling';
   if (active?.status === 'sms_sent') return 'sms_sent';
   if (candidates.some(c => c.status === 'confirmed')) return 'filled';
-  // If no active call and no SMS, agent is between actions
-  if (active?.status === 'calling' && callStatus !== 'idle') return 'calling';
   return 'idle';
 }
 
@@ -87,7 +83,6 @@ function App() {
   const [slotFilledBy, setSlotFilledBy] = useState<string | undefined>();
   const [recovered, setRecovered] = useState(0);
   const [agentStatusRaw, setAgentStatusRaw] = useState('idle');
-  const [callStatus, setCallStatus] = useState('idle');
   const [triggering, setTriggering] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
 
@@ -130,17 +125,14 @@ function App() {
       onScheduleChange((data) => {
         setSchedule(data?.slots || []);
       }),
-      onCallStatusChange((data) => {
-        setCallStatus(data?.status || 'idle');
-      }),
-    ];
+];
     return () => unsubs.forEach(u => u());
   }, []);
 
   // Derive agent phase from raw status + candidates + live call status
   useEffect(() => {
-    setPhase(derivePhase(agentStatusRaw, patients, callStatus));
-  }, [agentStatusRaw, patients, callStatus]);
+    setPhase(derivePhase(agentStatusRaw, patients));
+  }, [agentStatusRaw, patients]);
 
   // Compute stats from candidates
   const callCount = patients.filter(p => p.status !== 'queued').length;
