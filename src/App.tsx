@@ -18,6 +18,7 @@ import {
   onCandidatesChange,
   onActivityChange,
   onScheduleChange,
+  onCallStatusChange,
 } from './lib/firestore';
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'https://dental-agent-production.up.railway.app';
@@ -40,14 +41,22 @@ function mapCandidateStatus(s: string): Patient['status'] {
   return m[s] || 'queued';
 }
 
-function derivePhase(agentStatus: string, candidates: Patient[]): AgentPhase {
+function derivePhase(agentStatus: string, candidates: Patient[], callStatus: string): AgentPhase {
   if (agentStatus === 'complete') return 'filled';
   if (agentStatus === 'failed') return 'idle';
   if (agentStatus !== 'running') return 'idle';
-  const active = candidates.find(c => c.status === 'calling' || c.status === 'sms_sent');
-  if (active?.status === 'calling') return 'calling';
-  if (active?.status === 'sms_sent') return 'sms_sent';
+
+  // Check if someone confirmed
   if (candidates.some(c => c.status === 'confirmed')) return 'filled';
+
+  // Use real Twilio call status when available — only show calling when actually ringing/in-progress
+  if (callStatus === 'ringing' || callStatus === 'in-progress' || callStatus === 'initiated') return 'calling';
+
+  // Fall back to candidate status
+  const active = candidates.find(c => c.status === 'calling' || c.status === 'sms_sent');
+  if (active?.status === 'sms_sent') return 'sms_sent';
+
+  // Agent is running but between actions (thinking, scoring, etc.)
   return 'idle';
 }
 
@@ -83,6 +92,7 @@ function App() {
   const [slotFilledBy, setSlotFilledBy] = useState<string | undefined>();
   const [recovered, setRecovered] = useState(0);
   const [agentStatusRaw, setAgentStatusRaw] = useState('idle');
+  const [callStatus, setCallStatus] = useState('idle');
   const [triggering, setTriggering] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
 
@@ -125,14 +135,17 @@ function App() {
       onScheduleChange((data) => {
         setSchedule(data?.slots || []);
       }),
-];
+      onCallStatusChange((data) => {
+        setCallStatus(data?.status || 'idle');
+      }),
+    ];
     return () => unsubs.forEach(u => u());
   }, []);
 
   // Derive agent phase from raw status + candidates + live call status
   useEffect(() => {
-    setPhase(derivePhase(agentStatusRaw, patients));
-  }, [agentStatusRaw, patients]);
+    setPhase(derivePhase(agentStatusRaw, patients, callStatus));
+  }, [agentStatusRaw, patients, callStatus]);
 
   // Compute stats from candidates
   const callCount = patients.filter(p => p.status !== 'queued').length;
@@ -146,6 +159,13 @@ function App() {
   const triggerCancellation = useCallback(async () => {
     setTriggering(true);
     try {
+      // Reset first if agent is stuck in a non-idle state
+      if (phase !== 'idle') {
+        await fetch(`${BACKEND}/reset`, { method: 'POST' }).catch(() => {});
+        await seedSessionData().catch(() => {});
+        // Small delay for reset to propagate
+        await new Promise(r => setTimeout(r, 1000));
+      }
       const res = await fetch(`${BACKEND}/cancellation`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
@@ -205,14 +225,14 @@ function App() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={triggerCancellation} disabled={triggering || phase !== 'idle'}
+          <button onClick={triggerCancellation} disabled={triggering}
             className={`text-[11px] font-semibold px-4 py-1.5 rounded-full transition-all ${
-              triggering || phase !== 'idle'
+              triggering
                 ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                 : 'bg-[#7DF9FF] text-gray-900 hover:bg-[#5CE8F0] cursor-pointer'
             }`}
-            style={phase === 'idle' && !triggering ? { boxShadow: '0 2px 8px rgba(125,249,255,0.4)' } : undefined}>
-            {triggering ? 'Starting...' : 'Trigger Cancellation'}
+            style={!triggering ? { boxShadow: '0 2px 8px rgba(125,249,255,0.4)' } : undefined}>
+            {triggering ? 'Starting...' : phase !== 'idle' ? 'Reset & Trigger' : 'Trigger Cancellation'}
           </button>
           <span className="text-[12px] text-gray-300 font-mono tabular-nums">{clock}</span>
         </div>
