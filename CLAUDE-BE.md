@@ -8,78 +8,62 @@ Dental rescheduling agent that autonomously fills cancelled appointment slots. W
 
 ---
 
-## Firestore Schema (SOURCE OF TRUTH)
+## Firestore Schema (Adapted to Carter's Frontend)
 
-You own this schema. PM and UI reference it. If it changes, it changes here first.
+Backend writes to these collections. Frontend listens in real-time.
 
-### Collection: `sessions` → Document: `current`
+### Collection: `slots` → Document: `active`
 
 ```json
 {
-  "slot": {
-    "id": "slot_001",
-    "time": "2:00 PM",
-    "date": "Today",
-    "treatment": "cleaning",
-    "value": 200,
-    "status": "cancelled",
-    "filled_by": null
-  },
-  "activity": [
-    {
-      "id": "act_001",
-      "type": "event",
-      "text": "Cancellation received — agent starting",
-      "timestamp": "2024-03-14T10:00:00Z"
-    }
-  ],
-  "candidates": [
-    {
-      "rank": 1,
-      "name": "Sarah Kim",
-      "phone": "+1-801-555-0101",
-      "score": 82,
-      "status": "calling",
-      "treatment_needed": "cleaning",
-      "days_overdue": 15
-    }
-  ],
-  "pending_action": null,
-  "pending_outcome": null,
-  "recovered": 0,
-  "agent_status": "idle"
+  "id": "slot_001",
+  "time": "2:00 PM",
+  "date": "Today",
+  "treatment": "cleaning",
+  "value": 200,
+  "status": "filling",
+  "filled_by": null
 }
 ```
 
-### `pending_action` (PM writes, UI/Voice reads + executes)
+### Collection: `agent` → Document: `status`
 
 ```json
 {
-  "id": "action_abc123",
-  "type": "voice",
+  "status": "running",
+  "recovered": 0
+}
+```
+
+### Collection: `patients` → Documents: `p0`, `p1`, `p2`, ...
+
+Each candidate is a separate document for real-time UI updates:
+
+```json
+{
+  "rank": 1,
+  "name": "Sarah Kim",
   "phone": "+1-801-555-0101",
-  "patient_name": "Sarah Kim",
-  "message": "Hi Sarah, this is Bright Smile Dental...",
-  "status": "pending",
-  "created_at": "2026-03-14T10:32:00Z"
+  "score": 154,
+  "status": "calling",
+  "treatment_needed": "cleaning",
+  "cycles_overdue": 1,
+  "reliability_score": 0.95,
+  "preferred_time_of_day": "afternoon",
+  "pending_treatment": false
 }
 ```
 
-- `type`: `"voice"` (ElevenLabs + Twilio) or `"sms"` (Twilio)
-- `status`: `"pending"` → `"sent"` → `"in_progress"` → `"completed"`
-
-### `pending_outcome` (UI/Voice writes, PM reads)
+### Collection: `activity_log` → Auto-generated documents
 
 ```json
 {
-  "type": "voice",
-  "result": "no_answer",
-  "details": "Call rang for 30 seconds, no pickup",
-  "completed_at": "2026-03-14T10:33:00Z"
+  "id": "act_abc123",
+  "type": "thinking",
+  "text": "Scoring 16 candidates for cleaning",
+  "timestamp": "<serverTimestamp>"
 }
 ```
-
-- `result`: `"confirmed"` | `"declined"` | `"no_answer"`
 
 ### `slot.status` Values
 
@@ -91,7 +75,7 @@ You own this schema. PM and UI reference it. If it changes, it changes here firs
 | `"filled"` | Slot has been filled |
 | `"exhausted"` | Agent tried all candidates, nobody available |
 
-### `agent_status` Values
+### `agent.status` Values
 
 | Value | Meaning |
 |-------|---------|
@@ -100,19 +84,19 @@ You own this schema. PM and UI reference it. If it changes, it changes here firs
 | `"complete"` | Slot filled successfully |
 | `"failed"` | Could not fill slot (exhausted candidates) |
 
-### `activity[].type` Values
+### `activity_log.type` Values
 
-| Type | When to Use | UI Display |
-|------|-------------|------------|
-| `"event"` | System events (cancellation received, agent started) | Grey dot |
-| `"thinking"` | Agent reasoning (scoring candidates, deciding next step) | Purple dot, italic |
-| `"tool_call"` | Agent taking action (requesting call/SMS) | Blue dot |
-| `"call_outcome"` | Result of a voice call (answered, no answer, declined) | Orange dot |
-| `"sms_sent"` | SMS was sent | Teal dot |
-| `"success"` | Slot filled, revenue logged | Green dot, bold |
-| `"error"` | Something went wrong | Red dot |
+| Type | When to Use |
+|------|-------------|
+| `"event"` | System events (cancellation received, agent started) |
+| `"thinking"` | Agent reasoning (scoring candidates, deciding next step) |
+| `"tool_call"` | Agent taking action (requesting call/SMS) |
+| `"call_outcome"` | Result of a voice call |
+| `"sms_sent"` | SMS was sent |
+| `"success"` | Slot filled, revenue logged |
+| `"error"` | Something went wrong |
 
-### `candidates[].status` Values
+### `patients.status` Values
 
 | Value | Meaning |
 |-------|---------|
@@ -120,98 +104,94 @@ You own this schema. PM and UI reference it. If it changes, it changes here firs
 | `"calling"` | Currently being called |
 | `"texting"` | SMS sent, waiting for reply |
 | `"declined"` | Said no |
-| `"no_answer"` | Didn't pick up, no SMS reply |
+| `"no_answer"` | Didn't pick up |
+| `"no_reply"` | SMS sent, no response |
 | `"confirmed"` | Said yes — slot filled |
 
 ---
 
-## Your Module: `brain.py`
+## Your Module: `agent/brain.py`
 
-PM's Claude Agent SDK orchestrator will import and call these functions. Define these interfaces clearly.
+PM's orchestrator imports and calls these functions.
+
+### Scoring Formula
+
+```python
+def score_candidate(patient: dict, slot: dict) -> int:
+    """
+    Scoring factors:
+    - cycles_overdue × 25 (capped at 4 cycles, max 100 pts)
+    - treatment_match: +100 / -50 (dominant factor)
+    - reliability × 20 (0-20 pts)
+    - time_of_day match: +10 if preferred time matches slot
+    - pending_treatment: +25 if unfinished treatment
+    """
+```
 
 ### Function Signatures
 
 ```python
 from typing import Literal
 
-# Types
-CandidateStatus = Literal["waiting", "calling", "texting", "declined", "no_answer", "confirmed"]
-Action = Literal["call", "sms", "next_candidate", "give_up", "done"]
+Action = Literal["call", "sms", "next_candidate", "wait", "give_up", "done"]
+CandidateStatus = Literal["waiting", "calling", "texting", "declined", "no_answer", "no_reply", "confirmed"]
 
 def score_candidates(recall_list: list[dict], slot: dict) -> list[dict]:
-    """
-    Score and rank candidates for a given slot.
+    """Score and rank candidates. Returns sorted list with score, rank, status."""
 
-    Args:
-        recall_list: List of patients from recall list
-            [{"name": str, "phone": str, "treatment_needed": str, "days_overdue": int, "reliability_score": float}, ...]
-        slot: The slot to fill
-            {"treatment": str, "time": str, "date": str, "value": int}
+def get_next_action(candidates: list[dict], current_index: int, elapsed_time: float = 0.0) -> tuple[Action, int]:
+    """Decide next action based on current state. Includes timeout handling."""
 
-    Returns:
-        Ranked list of candidates with scores
-        [{"rank": int, "name": str, "phone": str, "score": int, "status": "waiting", "treatment_needed": str, "days_overdue": int}, ...]
-
-    Scoring factors:
-        - Days overdue (more overdue = higher priority)
-        - Treatment match (matches slot treatment = bonus)
-        - Reliability history (higher = bonus)
-    """
-    pass
-
-
-def get_next_action(candidates: list[dict], current_candidate_index: int) -> tuple[Action, int]:
-    """
-    Decide the next action based on current state.
-
-    Args:
-        candidates: Current ranked candidate list with statuses
-        current_candidate_index: Index of candidate we're working on (-1 if none)
-
-    Returns:
-        (action, candidate_index)
-        - ("call", 0) → Call candidate at index 0
-        - ("sms", 0) → Send SMS to candidate at index 0 (fallback after no answer)
-        - ("next_candidate", 1) → Move to candidate at index 1
-        - ("give_up", -1) → No more candidates, mark as exhausted
-        - ("done", 0) → Candidate confirmed, slot filled
-
-    Logic:
-        - If current candidate status is "waiting" → call them
-        - If current candidate status is "no_answer" → try SMS
-        - If current candidate status is "declined" or SMS failed → next candidate
-        - If all candidates exhausted → give up
-        - If any candidate is "confirmed" → done
-    """
-    pass
-
-
-def update_candidate_status(candidates: list[dict], candidate_index: int, new_status: CandidateStatus) -> list[dict]:
-    """
-    Update a candidate's status and return the new list.
-
-    Args:
-        candidates: Current candidate list
-        candidate_index: Which candidate to update
-        new_status: New status value
-
-    Returns:
-        Updated candidate list
-    """
-    pass
-
+def update_candidate_status(candidates: list[dict], idx: int, new_status: CandidateStatus) -> list[dict]:
+    """Update a candidate's status (immutable - returns new list)."""
 
 def calculate_recovered_revenue(slot: dict) -> int:
-    """
-    Calculate recovered revenue when slot is filled.
+    """Return slot value when filled."""
+```
 
-    Args:
-        slot: The filled slot
+---
 
-    Returns:
-        Dollar amount recovered (slot value)
-    """
-    return slot.get("value", 0)
+## Firestore Helpers: `agent/firestore.py`
+
+```python
+def init_firestore(service_account_path: str) -> None
+def initialize_session(slot: dict, recall_list: list = None) -> list[dict]  # Main entry point!
+def add_activity(activity_type: str, text: str) -> None
+def update_agent_status(status: str) -> None
+def update_slot_status(status: str, filled_by: str = None) -> None
+def update_candidates(candidates: list[dict]) -> None
+def update_recovered(amount: int) -> None
+def reset_session() -> None
+```
+
+### Quick Start for PM
+
+```python
+from agent import initialize_session, DEMO_SLOT
+
+# When cancellation happens:
+candidates = initialize_session(DEMO_SLOT)
+# This automatically:
+# - Scores all 16 patients
+# - Writes slot, agent status, candidates to Firestore
+# - Logs activity
+# - Returns ranked candidates
+```
+
+---
+
+## Patient Data Fields
+
+```python
+{
+    "name": "Sarah Kim",
+    "phone": "+1-801-555-0101",
+    "treatment_needed": "cleaning",
+    "cycles_overdue": 1,              # 1 cycle = ~6 months for cleanings
+    "reliability_score": 0.95,        # 0-1 based on appointment history
+    "preferred_time_of_day": "afternoon",  # "morning" | "afternoon" | "evening"
+    "pending_treatment": False,       # True if unfinished treatment
+}
 ```
 
 ---
@@ -241,121 +221,42 @@ exhausted → open (when demo reset)
 
 ---
 
-## Firestore Write Patterns
+## Mock Data
 
-Use `firebase-admin` SDK. UI/Voice person will set up the Firebase project and share credentials.
+16 patients across 6 treatment types in `agent/mock_data.py`:
+- 5 cleaning patients
+- 3 filling patients
+- 2 crown patients
+- 2 root canal patients
+- 2 exam patients
+- 2 whitening patients
 
-```python
-import firebase_admin
-from firebase_admin import credentials, firestore
-from datetime import datetime
-import uuid
-
-# Initialize (do once)
-cred = credentials.Certificate("path/to/serviceAccountKey.json")
-firebase_admin.initialize_app(cred)
-db = firestore.client()
-
-# Reference to the session document
-session_ref = db.collection("sessions").document("current")
-
-
-def add_activity(activity_type: str, text: str):
-    """Add an activity log entry."""
-    session_ref.update({
-        "activity": firestore.ArrayUnion([{
-            "id": f"act_{uuid.uuid4().hex[:8]}",
-            "type": activity_type,
-            "text": text,
-            "timestamp": datetime.utcnow().isoformat() + "Z"
-        }])
-    })
-
-
-def update_agent_status(status: str):
-    """Update agent_status field."""
-    session_ref.update({"agent_status": status})
-
-
-def update_slot_status(status: str, filled_by: str = None):
-    """Update slot status and optionally who filled it."""
-    updates = {"slot.status": status}
-    if filled_by:
-        updates["slot.filled_by"] = filled_by
-    session_ref.update(updates)
-
-
-def update_candidates(candidates: list[dict]):
-    """Replace the candidates array."""
-    session_ref.update({"candidates": candidates})
-
-
-def update_recovered(amount: int):
-    """Update recovered revenue."""
-    session_ref.update({"recovered": amount})
-```
-
----
-
-## Mock Recall List (For Demo)
-
-Use this data to score candidates:
-
-```python
-RECALL_LIST = [
-    {
-        "name": "Sarah Kim",
-        "phone": "+1-801-555-0101",
-        "treatment_needed": "cleaning",
-        "days_overdue": 15,
-        "reliability_score": 0.9
-    },
-    {
-        "name": "James Park",
-        "phone": "+1-801-555-0102",
-        "treatment_needed": "cleaning",
-        "days_overdue": 8,
-        "reliability_score": 0.7
-    },
-    {
-        "name": "Maria Garcia",
-        "phone": "+1-801-555-0103",
-        "treatment_needed": "filling",
-        "days_overdue": 30,
-        "reliability_score": 0.85
-    },
-    {
-        "name": "David Chen",
-        "phone": "+1-801-555-0104",
-        "treatment_needed": "cleaning",
-        "days_overdue": 5,
-        "reliability_score": 0.6
-    }
-]
-```
-
----
-
-## Handoff to PM
-
-PM's Claude Agent SDK orchestrator will:
-1. Import your `brain.py` module
-2. Call `score_candidates()` when a cancellation is detected
-3. Call `get_next_action()` to decide what to do
-4. Write outreach intent to Firestore (`pending_action`) — UI/Voice executes it
-5. Read outcome from Firestore (`pending_outcome`) when UI/Voice writes it
-6. Call `update_candidate_status()` with the result
-7. Repeat until `get_next_action()` returns `"done"` or `"give_up"`
-
-Your job: Make sure these functions are solid and tested. PM depends on them.
+4 patients have `pending_treatment: True` (unfinished work).
 
 ---
 
 ## Setup Checklist
 
-- [ ] Get Firebase service account JSON from UI/Voice person
-- [ ] Install: `pip install firebase-admin`
-- [ ] Create `brain.py` with all functions above
-- [ ] Test scoring logic with mock recall list
-- [ ] Test state transitions
-- [ ] Hand off to PM for integration
+- [x] Get Firebase service account JSON from UI/Voice person
+- [x] Install: `pip install firebase-admin`
+- [x] Create `brain.py` with all functions
+- [x] Test scoring logic with mock recall list (20 tests passing)
+- [x] Test state transitions
+- [x] Adapt to Carter's Firestore schema
+- [x] Create `initialize_session()` for PM integration
+- [x] Hand off to PM for integration
+
+---
+
+## Files
+
+```
+agent/
+├── __init__.py          # Package exports
+├── brain.py             # Scoring + decision logic
+├── state.py             # State machine definitions
+├── firestore.py         # Firestore write helpers
+├── mock_data.py         # 16 mock patients + demo slots
+└── tests/
+    └── test_brain.py    # 20 tests
+```
