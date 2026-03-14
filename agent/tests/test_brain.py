@@ -25,7 +25,7 @@ class TestScoring:
     """Tests for candidate scoring logic."""
 
     def test_score_candidate_treatment_match_bonus(self):
-        """Treatment match should give +50 bonus."""
+        """Treatment match should give +150 bonus."""
         patient = {
             "treatment_needed": "cleaning",
             "days_overdue": 10,
@@ -35,11 +35,11 @@ class TestScoring:
 
         score = score_candidate(patient, slot)
 
-        # 10*3 + 50 + 10 = 90
-        assert score == 90
+        # min(10,60)*2 + 150 + int(0.5*30) = 20 + 150 + 15 = 185
+        assert score == 185
 
     def test_score_candidate_treatment_mismatch_penalty(self):
-        """Treatment mismatch should give -20 penalty."""
+        """Treatment mismatch should give -200 penalty."""
         patient = {
             "treatment_needed": "filling",
             "days_overdue": 10,
@@ -49,15 +49,15 @@ class TestScoring:
 
         score = score_candidate(patient, slot)
 
-        # 10*3 - 20 + 10 = 20
-        assert score == 20
+        # min(10,60)*2 - 200 + int(0.5*30) = 20 - 200 + 15 = -165
+        assert score == -165
 
     def test_score_candidates_ranks_correctly(self):
         """Candidates should be ranked by score descending."""
         candidates = score_candidates(RECALL_LIST, DEMO_SLOT)
 
-        # Sarah Kim should be #1 (cleaning match + high reliability + 15 days overdue)
-        assert candidates[0]["name"] == "Sarah Kim"
+        # Top candidate should be a cleaning patient (treatment match)
+        assert candidates[0]["treatment_needed"] == "cleaning"
         assert candidates[0]["rank"] == 1
 
         # Verify scores are descending

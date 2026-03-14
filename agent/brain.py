@@ -30,10 +30,13 @@ def score_candidate(patient: dict, slot: dict) -> int:
 
     Higher score = higher priority to contact.
 
-    Scoring factors:
-    - days_overdue × 3: More overdue patients get higher priority
-    - treatment_match: +50 if matches, -20 if doesn't
-    - reliability_score × 20: More reliable patients get bonus
+    Scoring factors (in order of importance):
+    1. Treatment match: +150 bonus / -200 penalty (dominant factor)
+    2. Days overdue × 2: More overdue = higher priority (capped at 60 days)
+    3. Reliability × 30: More reliable patients get bonus
+
+    The treatment match is intentionally the strongest factor because
+    you can't do a crown in a cleaning slot - treatment must match.
 
     Args:
         patient: Patient dict with keys:
@@ -46,18 +49,20 @@ def score_candidate(patient: dict, slot: dict) -> int:
     Returns:
         Integer score (higher = better candidate)
     """
-    score = patient["days_overdue"] * 3
+    # Cap days_overdue at 60 to prevent extremely overdue patients from
+    # dominating over treatment match
+    days_factor = min(patient["days_overdue"], 60) * 2
 
-    # Treatment match bonus/penalty
+    # Treatment match is the most important factor
     if patient["treatment_needed"] == slot["treatment"]:
-        score += 50
+        treatment_factor = 150
     else:
-        score -= 20
+        treatment_factor = -200
 
-    # Reliability bonus
-    score += int(patient["reliability_score"] * 20)
+    # Reliability bonus (scaled to 0-30 range)
+    reliability_factor = int(patient["reliability_score"] * 30)
 
-    return score
+    return days_factor + treatment_factor + reliability_factor
 
 
 def score_candidates(recall_list: list[dict], slot: dict) -> list[dict]:
