@@ -1,3 +1,6 @@
+# Force Python-only build (ignore package.json)
+providers = ["python"]
+
 [phases.setup]
 nixPkgs = ["python311"]
 
