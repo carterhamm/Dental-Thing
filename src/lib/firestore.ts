@@ -1,4 +1,4 @@
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { db } from './firebase';
 
 // Backend uses sessions/current as the single source of truth
@@ -30,6 +30,24 @@ export interface SessionData {
   }>;
   recovered: number;
   agent_status: 'idle' | 'running' | 'complete' | 'failed';
+}
+
+export async function seedSessionData() {
+  await setDoc(doc(db, 'sessions', 'current'), {
+    slot: {
+      id: 'slot_001',
+      time: '2:00 PM',
+      date: 'Today',
+      treatment: 'cleaning',
+      value: 200,
+      status: 'cancelled',
+      filled_by: null,
+    },
+    activity: [],
+    candidates: [],
+    recovered: 0,
+    agent_status: 'idle',
+  });
 }
 
 export function onSessionChange(cb: (data: SessionData | null) => void) {

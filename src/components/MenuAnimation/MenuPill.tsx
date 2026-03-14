@@ -18,6 +18,7 @@ const NAV_ITEMS: MenuItem[] = [
   { label: 'Patients' },
   { label: 'Activity Log' },
   { sep: true },
+  { label: 'Seed Data', action: 'seed', accent: true },
   { label: 'Reset Agent', action: 'reset', danger: true },
   { label: 'Settings' },
 ];

@@ -8,7 +8,7 @@ import type { Patient } from './components/dashboard/PatientQueue';
 import { ActivityLog } from './components/dashboard/ActivityLog';
 import type { LogEntry } from './components/dashboard/ActivityLog';
 import { StatsBar } from './components/dashboard/StatsBar';
-import { onSessionChange } from './lib/firestore';
+import { onSessionChange, seedSessionData } from './lib/firestore';
 import type { SessionData } from './lib/firestore';
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
@@ -164,12 +164,16 @@ function App() {
   }, []);
 
   const handleMenuAction = useCallback(async (action: string) => {
-    if (action === 'reset') {
+    if (action === 'seed') {
       try {
-        await fetch(`${BACKEND}/reset`, { method: 'POST' });
+        await seedSessionData();
       } catch (e) {
-        console.error('Failed to reset:', e);
+        console.error('Failed to seed:', e);
       }
+    }
+    if (action === 'reset') {
+      try { await fetch(`${BACKEND}/reset`, { method: 'POST' }); } catch {}
+      try { await seedSessionData(); } catch {}
     }
   }, []);
 
