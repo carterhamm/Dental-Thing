@@ -16,6 +16,7 @@ Run with:
 
 import os
 import asyncio
+import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -33,6 +34,7 @@ load_dotenv()
 
 # --- Orchestrator singleton ---
 _orchestrator: Orchestrator | None = None
+_session_id: str = ""  # Tracks current session; old polling threads check this
 
 
 def get_orchestrator() -> Orchestrator:
@@ -117,11 +119,12 @@ async def root():
 @app.post("/cancellation")
 async def trigger_cancellation(background_tasks: BackgroundTasks):
     """Trigger the Claude agent to start filling a cancelled slot."""
-    global _is_running
+    global _is_running, _session_id
     if _is_running:
         return {"status": "already_running"}
 
     _is_running = True
+    _session_id = uuid.uuid4().hex[:8]
     background_tasks.add_task(run_orchestrator)
     return {"status": "agent_started"}
 
@@ -177,9 +180,13 @@ async def sms_reply(body: SMSReply, background_tasks: BackgroundTasks):
 @app.post("/reset")
 async def reset_demo():
     """Reset demo to initial state."""
-    global _is_running, _orchestrator
+    global _is_running, _orchestrator, _session_id
     _is_running = False
+    _session_id = ""  # Invalidate old polling threads
+    if _orchestrator:
+        _orchestrator.cancelled = True  # Stop old orchestrator's run_step loop
     _orchestrator = None
+    _phone_to_patient.clear()
     reset_session()
     return {"status": "reset_complete"}
 
@@ -216,8 +223,9 @@ async def handle_outcome_async(patient_name: str, outcome: str):
         await asyncio.to_thread(orch.handle_outcome, patient_name, outcome)
         # Check if agent is done
         if orch.candidates:
+            from agent.state import TERMINAL_CANDIDATE_STATUSES
             all_terminal = all(
-                c["status"] in ("declined", "no_answer", "no_reply", "confirmed")
+                c["status"] in TERMINAL_CANDIDATE_STATUSES
                 for c in orch.candidates
             )
             any_confirmed = any(c["status"] == "confirmed" for c in orch.candidates)
@@ -413,10 +421,12 @@ def trigger_voice_call(patient: dict):
         print(f"[MOCK] Simulating 'no_answer' after 3 seconds...")
         # Simulate a call outcome so the demo can continue
         import threading
+        session = _session_id
         def send_mock_outcome():
             import time
             time.sleep(3)
-            _post_outcome(patient['name'], 'no_answer')
+            if _session_id == session:
+                _post_outcome(patient['name'], 'no_answer')
         threading.Thread(target=send_mock_outcome, daemon=True).start()
         return
 
@@ -454,11 +464,11 @@ def trigger_voice_call(patient: dict):
         print(f"[ELEVENLABS] Call initiated to {patient['name']}: {data}")
         _phone_to_patient[patient["phone"]] = patient["name"]
 
-        # Poll for call outcome in background
+        # Poll for call outcome in background — pass session_id so stale threads stop
         import threading
         threading.Thread(
             target=_poll_call_outcome,
-            args=(conv_id, patient["name"]),
+            args=(conv_id, patient["name"], _session_id),
             daemon=True,
         ).start()
     else:
@@ -472,14 +482,88 @@ def trigger_voice_call(patient: dict):
             ).start()
 
 
-def _poll_call_outcome(conversation_id: str, patient_name: str):
+def _parse_call_outcome(call_successful: str, transcript_summary: str) -> str:
+    """Parse ElevenLabs call analysis into confirmed/declined/no_answer.
+
+    ElevenLabs' call_successful means the call *completed*, NOT that the
+    appointment was confirmed. We must check the transcript for the actual outcome.
+    """
+    summary_lower = transcript_summary.lower()
+
+    # 1. Voicemail — treat as no_answer (nobody picked up)
+    voicemail_phrases = [
+        "voicemail", "voice mail", "leave a message", "mailbox",
+        "after the beep", "after the tone", "not available to take",
+        "please leave", "no one answered", "went to voicemail",
+    ]
+    if any(phrase in summary_lower for phrase in voicemail_phrases):
+        print(f"[PARSE] Detected VOICEMAIL in transcript")
+        return "no_answer"
+
+    # 2. Wrong number — treat as no_answer (not the right person)
+    wrong_number_phrases = [
+        "wrong number", "wrong person", "not the right person",
+        "who is this", "you have the wrong", "no one by that name",
+        "doesn't live here", "not here", "don't know who",
+        "never heard of", "no such person",
+    ]
+    if any(phrase in summary_lower for phrase in wrong_number_phrases):
+        print(f"[PARSE] Detected WRONG NUMBER in transcript")
+        return "no_answer"
+
+    # 3. Explicit decline — person answered but can't/won't take the appointment
+    decline_phrases = [
+        "can't make it", "cannot make it", "can't do", "cannot do",
+        "not available", "doesn't work", "won't work", "i'm busy",
+        "decline", "not interested", "no thank", "can't come",
+        "unable to", "that time doesn't", "that doesn't work",
+        "won't be able", "not going to work", "i can't",
+        "doesn't suit", "i have plans", "already have",
+        "refused", "said no", "patient declined", "they declined",
+        "did not confirm", "unable to confirm", "not confirm",
+        "did not accept", "not able to make",
+    ]
+    if any(phrase in summary_lower for phrase in decline_phrases):
+        print(f"[PARSE] Detected DECLINE in transcript")
+        return "declined"
+
+    # 4. Explicit confirmation — person confirmed the appointment
+    confirm_phrases = [
+        "confirmed", "booked", "i'll be there", "i'll take it",
+        "sounds good", "see you then", "accepted the appointment",
+        "i can make it", "that works", "i'll come in",
+        "appointment confirmed", "agreed to", "patient accepted",
+        "patient confirmed", "they confirmed", "said yes",
+        "scheduled the appointment", "appointment was scheduled",
+    ]
+    has_confirmation = any(phrase in summary_lower for phrase in confirm_phrases)
+
+    if call_successful == "success" and has_confirmation:
+        print(f"[PARSE] Detected CONFIRMED (call_successful + transcript match)")
+        return "confirmed"
+    elif call_successful == "success":
+        # ElevenLabs said "success" but transcript has no clear confirmation.
+        # Be conservative — don't auto-book. Let the agent follow up via SMS.
+        print(f"[PARSE] call_successful=success but NO confirmation in transcript — treating as no_answer")
+        return "no_answer"
+    else:
+        return "no_answer"
+
+
+def _poll_call_outcome(conversation_id: str, patient_name: str, session_id: str):
     """Poll ElevenLabs conversation status until the call ends, then feed outcome back."""
     import time
     import requests as req
 
-    print(f"[POLL] Watching conversation {conversation_id} for {patient_name}")
+    print(f"[POLL] Watching conversation {conversation_id} for {patient_name} (session={session_id})")
     for attempt in range(60):  # poll for up to 5 minutes
         time.sleep(5)
+
+        # Stop if session was reset (user hit reset)
+        if _session_id != session_id:
+            print(f"[POLL] Session changed ({session_id} → {_session_id}), stopping poll for {patient_name}")
+            return
+
         try:
             r = req.get(
                 f"https://api.elevenlabs.io/v1/convai/conversations/{conversation_id}",
@@ -495,7 +579,7 @@ def _poll_call_outcome(conversation_id: str, patient_name: str):
             if status not in ("done", "failed"):
                 continue
 
-            # Call is over — determine outcome
+            # Call is over — determine outcome from analysis
             analysis = data.get("analysis", {})
             call_successful = analysis.get("call_successful", "")
             transcript_summary = analysis.get("transcript_summary", "")
@@ -503,15 +587,14 @@ def _poll_call_outcome(conversation_id: str, patient_name: str):
             print(f"[POLL] Call ended: status={status}, successful={call_successful}")
             print(f"[POLL] Summary: {transcript_summary}")
 
-            # Map ElevenLabs outcome to our status
-            if call_successful == "success":
-                outcome = "confirmed"
-            elif "declined" in transcript_summary.lower() or "no" in transcript_summary.lower():
-                outcome = "declined"
-            else:
-                outcome = "no_answer"
+            outcome = _parse_call_outcome(call_successful, transcript_summary)
+            print(f"[POLL] Parsed outcome: {outcome}")
 
-            _post_outcome(patient_name, outcome)
+            # Only post if session is still current
+            if _session_id == session_id:
+                _post_outcome(patient_name, outcome)
+            else:
+                print(f"[POLL] Session stale, discarding outcome for {patient_name}")
             return
 
         except Exception as e:
@@ -519,7 +602,8 @@ def _poll_call_outcome(conversation_id: str, patient_name: str):
 
     # Timeout — treat as no_answer
     print(f"[POLL] Timeout waiting for {patient_name}")
-    _post_outcome(patient_name, "no_answer")
+    if _session_id == session_id:
+        _post_outcome(patient_name, "no_answer")
 
 
 def _post_outcome(patient_name: str, outcome: str):

@@ -144,23 +144,24 @@ cancelled their appointment and you need to fill the slot by contacting \
 candidates from the recall list.
 
 Your workflow:
-1. rank_candidates to score the waitlist for this slot.
-2. log_thinking to explain rankings to the judges.
-3. decide_next_action to get the brain's recommendation.
-4. Based on the action:
-   - "call" → log_thinking why, then initiate_voice_call
-   - "sms" → log_thinking the fallback reason, then initiate_sms
-   - "next_candidate" → log_thinking why you're moving on, then decide_next_action with new index
-   - "done" → log_thinking to celebrate, then book_appointment
-   - "give_up" → log_thinking summarizing what happened, then stop
-5. After initiating outreach, STOP and return. The webhook will deliver the outcome \
-and the agent loop will re-invoke you with updated state.
+1. rank_candidates to score the waitlist, then IMMEDIATELY log_thinking to explain (batch both in one response).
+2. decide_next_action to get the brain's recommendation.
+3. Based on the action, BATCH log_thinking + the action tool in a single response:
+   - "call" → log_thinking why + initiate_voice_call (BOTH in one response)
+   - "sms" → log_thinking fallback reason + initiate_sms (BOTH in one response)
+   - "next_candidate" → log_thinking why moving on + decide_next_action with new index (BOTH in one response)
+   - "done" → log_thinking to celebrate + book_appointment (BOTH in one response)
+   - "give_up" → log_thinking summarizing, then stop
+4. After initiating a call or SMS, STOP and return. The outcome arrives via webhook.
 
-Rules:
+CRITICAL RULES:
+- ALWAYS use parallel/batched tool calls to minimize round trips. Call multiple tools in ONE response.
 - ALWAYS log_thinking before taking action — the feed IS the demo.
 - Be specific: "Sarah Kim scores 82 — 15 days overdue, exact treatment match, 90% reliable."
 - Keep reasoning to 1-2 sentences. Sound like a smart assistant, not a robot.
-- After initiating a call or SMS, you MUST stop. Do not loop — the outcome arrives via webhook.
+- After initiating a call or SMS, you MUST stop. Do not loop.
+- NEVER call book_appointment unless you received an explicit "confirmed" outcome. \
+If the outcome was "no_answer" or "declined", move to the next candidate or try SMS.
 """
 
 
@@ -172,6 +173,7 @@ class Orchestrator:
         self.candidates: list[dict] = []
         self.slot: dict = {}
         self.current_index: int = -1
+        self.cancelled: bool = False  # Set by reset to stop run_step loop
         # Comms callbacks — main.py wires these to real Twilio/ElevenLabs
         self.on_voice_call: callable = None
         self.on_sms: callable = None
@@ -228,8 +230,12 @@ class Orchestrator:
         elif tool_name == "book_appointment":
             idx = tool_input["candidate_index"]
             candidate = self.candidates[idx]
-            self.candidates = update_candidate_status(self.candidates, idx, "confirmed")
-            update_candidates(self.candidates)
+            # Safety check: only book if the candidate actually confirmed
+            if candidate["status"] != "confirmed":
+                return (
+                    f"CANNOT book {candidate['name']} — their status is '{candidate['status']}', not 'confirmed'. "
+                    f"Call decide_next_action to determine the correct next step."
+                )
             revenue = calculate_recovered_revenue(self.slot)
             update_slot_status("filled", filled_by=candidate["name"])
             update_recovered(revenue)
@@ -248,9 +254,15 @@ class Orchestrator:
 
     def run_step(self, user_message: str) -> str:
         """Run one step of the Claude agent loop."""
+        if self.cancelled:
+            return ""
+
         messages = [{"role": "user", "content": user_message}]
 
         for _ in range(15):
+            if self.cancelled:
+                return ""
+
             response = self.client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=1024,
@@ -300,6 +312,9 @@ class Orchestrator:
 
     def handle_outcome(self, candidate_name: str, outcome: str) -> str:
         """Handle a webhook outcome. Re-invokes Claude to decide next steps."""
+        if self.cancelled:
+            return ""
+
         # First, try to use current_index if it matches the name (avoids duplicate name issues)
         matched_index = None
         if 0 <= self.current_index < len(self.candidates):
