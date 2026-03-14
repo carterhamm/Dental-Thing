@@ -243,7 +243,6 @@ function App() {
               { label: 'Filled', value: filledCount, accent: 'green', icon: <IconCheck /> },
               { label: 'Recovered', value: `$${recovered}`, accent: 'gray', icon: <IconDollar /> },
               { label: 'Calls', value: callCount, accent: 'cyan', icon: <IconPhone /> },
-              { label: 'Texts', value: smsCount, accent: 'purple', icon: <IconMessage /> },
             ]} />
             <div className="col-span-2"><CancellationSlot status={slotStatus} bookedBy={slotFilledBy} slotTime={slotTime} /></div>
             <div className="col-span-1"><AgentStatus phase={phase} currentPatient={currentPatient} attempt={attemptNum} totalPatients={patients.length} /></div>

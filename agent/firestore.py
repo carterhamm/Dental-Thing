@@ -259,6 +259,13 @@ def reset_session() -> None:
             "recovered": 0,
         })
 
+        # Clear call status
+        _db.collection("call").document("active").set({
+            "status": "idle",
+            "patient_name": "",
+            "call_sid": "",
+        })
+
         # Reset daily schedule
         seed_schedule()
     else:

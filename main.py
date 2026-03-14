@@ -367,6 +367,8 @@ def trigger_voice_call(patient: dict):
     # Mark call as initiated in Firestore so frontend shows real state
     update_call_status("ringing", patient["name"])
 
+    server_url = os.environ.get("SERVER_URL", "https://dental-agent-production.up.railway.app")
+
     import requests
     resp = requests.post(
         "https://api.elevenlabs.io/v1/convai/twilio/outbound-call",
@@ -378,15 +380,67 @@ def trigger_voice_call(patient: dict):
             "agent_id": ELEVENLABS_AGENT_ID,
             "agent_phone_number_id": ELEVENLABS_PHONE_NUMBER_ID,
             "to_number": patient["phone"],
+            "webhook_url": f"{server_url}/webhooks/elevenlabs",
         },
     )
     if resp.ok:
         data = resp.json()
+        conv_id = data.get("conversation_id", "")
         print(f"[ELEVENLABS] Call initiated to {patient['name']}: {data}")
         _phone_to_patient[patient["phone"]] = patient["name"]
+        update_call_status("ringing", patient["name"], conv_id)
+        # Start polling for call completion as fallback
+        asyncio.get_event_loop().call_soon_threadsafe(
+            asyncio.ensure_future,
+            _poll_call_status(conv_id, patient["name"]),
+        )
     else:
         print(f"[ELEVENLABS] Call failed: {resp.status_code} {resp.text}")
         update_call_status("failed", patient["name"])
+
+
+async def _poll_call_status(conversation_id: str, patient_name: str):
+    """Poll ElevenLabs for call completion as fallback if webhook doesn't fire."""
+    if not conversation_id or not ELEVENLABS_API_KEY:
+        return
+    import requests as req
+    for _ in range(60):  # Poll for up to 2 minutes
+        await asyncio.sleep(2)
+        if not _is_running:
+            update_call_status("idle")
+            return
+        try:
+            r = req.get(
+                f"https://api.elevenlabs.io/v1/convai/conversations/{conversation_id}",
+                headers={"xi-api-key": ELEVENLABS_API_KEY},
+                timeout=5,
+            )
+            if r.ok:
+                data = r.json()
+                status = data.get("status", "")
+                if status in ("done", "completed", "failed"):
+                    print(f"[POLL] Call {conversation_id} ended: {status}")
+                    update_call_status("idle")
+                    analysis = data.get("analysis", {})
+                    call_successful = analysis.get("call_successful", False)
+                    if call_successful:
+                        outcome = "confirmed"
+                    elif "declined" in str(analysis).lower() or "no" in str(analysis).lower():
+                        outcome = "declined"
+                    else:
+                        outcome = "no_answer"
+                    if _is_running:
+                        await handle_outcome_bg(patient_name, outcome)
+                    return
+                elif status in ("in-progress", "active"):
+                    update_call_status("in-progress", patient_name)
+        except Exception as e:
+            print(f"[POLL] Error: {e}")
+    # Timeout — clear stuck state
+    print(f"[POLL] Call {conversation_id} timed out")
+    update_call_status("idle")
+    if _is_running:
+        await handle_outcome_bg(patient_name, "no_answer")
 
 
 @app.post("/webhooks/twilio-status")
