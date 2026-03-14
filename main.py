@@ -231,7 +231,8 @@ async def handle_outcome_async(patient_name: str, outcome: str):
 
 TWILIO_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH = os.environ.get("TWILIO_AUTH_TOKEN", "")
-TWILIO_PHONE = os.environ.get("TWILIO_PHONE_NUMBER", "")
+TWILIO_PHONE = os.environ.get("TWILIO_PHONE_NUMBER", "")  # voice calls
+TWILIO_SMS_PHONE = os.environ.get("TWILIO_SMS_NUMBER", "") or TWILIO_PHONE  # toll-free for SMS
 
 # Phone-to-patient lookup (populated when we send SMS)
 _phone_to_patient: dict[str, str] = {}
@@ -261,7 +262,7 @@ def send_sms(patient: dict, slot: dict):
     )
     msg = client.messages.create(
         body=body,
-        from_=TWILIO_PHONE,
+        from_=TWILIO_SMS_PHONE,
         to=patient["phone"],
     )
     # Track phone→patient mapping so we can match inbound replies
