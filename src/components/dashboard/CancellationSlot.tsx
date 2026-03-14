@@ -1,3 +1,5 @@
+import { IconClock } from '../Icons';
+
 interface Props {
   status: 'open' | 'booking' | 'filled';
   bookedBy?: string;
@@ -11,32 +13,42 @@ export function CancellationSlot({ status, bookedBy, slotTime = '—' }: Props) 
 
   if (isEmpty) {
     return (
-      <div className="bg-white rounded-2xl p-6 flex flex-col items-center justify-center h-full border-l-4 border-l-gray-200"
-        style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
-        <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mb-3">
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 4v6l4 2" stroke="#d1d5db" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><circle cx="10" cy="10" r="7" stroke="#d1d5db" strokeWidth="1.5"/></svg>
+      <div className="bg-white rounded-2xl p-6 flex flex-col items-center justify-center h-full border border-dashed border-slate-200"
+        style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.03)' }}>
+        <div className="w-14 h-14 rounded-2xl bg-slate-50 flex items-center justify-center mb-4 text-slate-300">
+          <IconClock />
         </div>
-        <span className="text-[13px] font-medium text-gray-400">No cancellations</span>
-        <span className="text-[11px] text-gray-300 mt-1">Slots will appear here when a patient cancels</span>
+        <span className="text-[14px] font-semibold text-slate-400">No cancellations</span>
+        <span className="text-[12px] text-slate-300 mt-1 text-center">Slots will appear here when<br/>a patient cancels</span>
       </div>
     );
   }
 
   return (
-    <div className={`bg-white rounded-2xl p-6 flex flex-col justify-between h-full border-l-4 transition-all duration-500 relative overflow-hidden ${
-      isFilled ? 'border-l-green-500' : isBooking ? 'border-l-amber-400' : 'border-l-red-400'
+    <div className={`rounded-2xl p-6 flex flex-col justify-between h-full relative overflow-hidden transition-all duration-500 ${
+      isFilled ? 'bg-gradient-to-br from-emerald-50 via-white to-emerald-50/30 border border-emerald-200/60'
+        : isBooking ? 'bg-gradient-to-br from-amber-50 via-white to-amber-50/30 border border-amber-200/60'
+        : 'bg-gradient-to-br from-red-50 via-white to-[#E0FCFF]/20 border border-red-200/40'
     }`}
-    style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}
+    style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 8px 20px rgba(0,0,0,0.04)' }}
     >
-      {/* Subtle background tint */}
-      {isFilled && <div className="absolute inset-0 bg-gradient-to-br from-green-50/60 to-transparent pointer-events-none" />}
-      {!isFilled && !isBooking && <div className="absolute inset-0 bg-gradient-to-br from-red-50/30 to-transparent pointer-events-none" />}
+      {/* Accent corner glow */}
+      <div className={`absolute -top-12 -right-12 w-32 h-32 rounded-full blur-3xl opacity-30 ${
+        isFilled ? 'bg-emerald-300' : isBooking ? 'bg-amber-300' : 'bg-[#7DF9FF]'
+      }`} />
 
       <div className="relative">
-        <div className="flex items-center justify-between mb-4">
-          <span className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase">
-            Cancellation Slot
-          </span>
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-2">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+              isFilled ? 'bg-emerald-100 text-emerald-600' : isBooking ? 'bg-amber-100 text-amber-600' : 'bg-red-100 text-red-500'
+            }`}>
+              <IconClock />
+            </div>
+            <span className="text-[12px] font-semibold text-slate-500 uppercase tracking-[0.06em]">
+              Cancellation Slot
+            </span>
+          </div>
           <div className="flex items-center gap-2">
             {status === 'open' && (
               <span className="relative flex h-2.5 w-2.5">
@@ -44,39 +56,41 @@ export function CancellationSlot({ status, bookedBy, slotTime = '—' }: Props) 
                 <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-400" />
               </span>
             )}
-            <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full transition-colors duration-500 ${
-              isFilled
-                ? 'bg-green-50 text-green-600 border border-green-100'
-                : isBooking
-                  ? 'bg-amber-50 text-amber-600 border border-amber-100'
-                  : 'bg-red-50 text-red-500 border border-red-100'
+            <span className={`text-[11px] font-bold px-3 py-1 rounded-full ${
+              isFilled ? 'bg-emerald-100 text-emerald-700' : isBooking ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-600'
             }`}>
               {isFilled ? 'FILLED' : isBooking ? 'BOOKING...' : 'OPEN'}
             </span>
           </div>
         </div>
 
-        <div className="text-[32px] font-bold tracking-tight text-gray-900 mb-0.5">
-          {slotTime}
-        </div>
-        <div className="text-gray-400 text-[13px]">
-          Today &middot; 60 min cleaning
-        </div>
+        <div className="text-[36px] font-bold tracking-tight text-slate-900 mb-1 font-mono">{slotTime}</div>
+        <div className="text-slate-400 text-[13px] font-medium">Today &middot; 60 min cleaning</div>
       </div>
 
-      <div className="relative mt-4 pt-4 border-t border-gray-100">
+      <div className="relative mt-5 pt-4 border-t border-slate-100">
         {isFilled ? (
-          <div className="flex items-center gap-2">
-            <span className="w-5 h-5 rounded-full bg-green-50 border border-green-200 flex items-center justify-center text-[10px]">✓</span>
-            <span className="text-green-600 text-sm font-semibold">{bookedBy}</span>
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7.5l3 3 5-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            </div>
+            <div>
+              <div className="text-emerald-700 text-[13px] font-semibold">{bookedBy}</div>
+              <div className="text-emerald-500/60 text-[11px]">Appointment confirmed</div>
+            </div>
           </div>
         ) : (
-          <>
-            <div className="text-gray-400 text-[11px] mb-0.5">Cancelled by</div>
-            <div className="text-gray-700 text-sm font-medium">Marcus Webb</div>
-          </>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-slate-400 text-[11px] font-medium mb-0.5">Cancelled by</div>
+              <div className="text-slate-700 text-[14px] font-semibold">Marcus Webb</div>
+            </div>
+            <div className="text-right">
+              <div className="text-slate-400 text-[11px] font-medium mb-0.5">Revenue at risk</div>
+              <div className="text-[#006B7A] text-[14px] font-bold font-mono">$185</div>
+            </div>
+          </div>
         )}
-        <div className="text-gray-300 text-[11px] mt-2">Est. revenue &middot; $185</div>
       </div>
     </div>
   );

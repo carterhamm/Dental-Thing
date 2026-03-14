@@ -59,11 +59,7 @@ function now() {
   return `${h > 12 ? h - 12 : h}:${m} ${h >= 12 ? 'PM' : 'AM'}`;
 }
 
-// SVG icons for stats
-const CheckIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 8.5L7 11.5L12 5" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-const DollarIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v12M5 5.5c0-1.1.9-2 2-2h2.5c1.1 0 2 .9 2 2s-.9 2-2 2H6.5c-1.1 0-2 .9-2 2s.9 2 2 2H11" stroke="#6b7280" strokeWidth="1.5" strokeLinecap="round"/></svg>;
-const PhoneIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 3.5C3 2.67 3.67 2 4.5 2H6l1.5 3-1.25.88a7 7 0 003.87 3.87L11 8.5l3 1.5v1.5c0 .83-.67 1.5-1.5 1.5A10.5 10.5 0 013 3.5z" stroke="#0097A7" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-const MsgIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4c0-.55.45-1 1-1h10c.55 0 1 .45 1 1v7c0 .55-.45 1-1 1H5l-3 3V4z" stroke="#9333ea" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+import { IconCheck, IconDollar, IconPhone, IconMessage, IconTooth } from './components/Icons';
 
 function App() {
   const [view, setView] = useState<View>('dashboard');
@@ -144,16 +140,21 @@ function App() {
   useEffect(() => { const id = setInterval(() => setClock(now()), 10000); return () => clearInterval(id); }, []);
 
   return (
-    <div className="h-screen flex flex-col bg-[#f0f2f5]">
+    <div className="h-screen flex flex-col" style={{ background: 'radial-gradient(ellipse at 15% 0%, rgba(125,249,255,0.1) 0%, transparent 50%), radial-gradient(ellipse at 85% 100%, rgba(125,249,255,0.06) 0%, transparent 50%), #f0f2f5' }}>
       {/* Header */}
       <header className="flex items-center justify-between px-6 h-14 shrink-0 bg-white/90 backdrop-blur-xl relative z-10"
         style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
         <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-gradient-to-r from-[#7DF9FF] via-[#7DF9FF]/30 to-transparent" />
         <div className="flex items-center gap-4">
           <MenuPill onAction={handleMenuAction} onNavigate={(v) => setView(v as View)} activeView={view} />
-          <div className="flex items-baseline gap-2.5">
-            <span className="text-[16px] font-bold text-gray-900 tracking-tight" style={{ fontFamily: "'Sora', sans-serif" }}>DentAI</span>
-            <span className="text-[11px] text-gray-400 font-medium hidden sm:inline">Cancellation Recovery</span>
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-[#7DF9FF] text-[#006B7A] flex items-center justify-center">
+              <IconTooth />
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-[16px] font-bold text-slate-900 tracking-tight">DentAI</span>
+              <span className="text-[11px] text-slate-400 font-medium hidden sm:inline">Cancellation Recovery</span>
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -184,10 +185,10 @@ function App() {
         {view === 'dashboard' && (
           <div className="h-full grid grid-cols-4 gap-4 animate-fadeIn" style={{ gridTemplateRows: '88px minmax(240px, 1fr) minmax(0, 2fr)' }}>
             <StatsBar stats={[
-              { label: 'Filled', value: filledCount, accent: 'green', icon: <CheckIcon /> },
-              { label: 'Recovered', value: `$${recovered}`, accent: 'gray', icon: <DollarIcon /> },
-              { label: 'Calls', value: callCount, accent: 'cyan', icon: <PhoneIcon /> },
-              { label: 'Texts', value: smsCount, accent: 'purple', icon: <MsgIcon /> },
+              { label: 'Filled', value: filledCount, accent: 'green', icon: <IconCheck /> },
+              { label: 'Recovered', value: `$${recovered}`, accent: 'gray', icon: <IconDollar /> },
+              { label: 'Calls', value: callCount, accent: 'cyan', icon: <IconPhone /> },
+              { label: 'Texts', value: smsCount, accent: 'purple', icon: <IconMessage /> },
             ]} />
             <div className="col-span-2"><CancellationSlot status={slotStatus} bookedBy={slotFilledBy} slotTime={slotTime} /></div>
             <div className="col-span-2"><AgentStatus phase={phase} currentPatient={currentPatient} attempt={attempt} totalPatients={totalPatients} /></div>
