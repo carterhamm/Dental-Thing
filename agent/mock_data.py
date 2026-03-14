@@ -35,6 +35,15 @@ RECALL_LIST = [
         "preferred_time_of_day": "afternoon",
         "pending_treatment": False,
     },
+    {
+        "name": "Eddy Kim",
+        "phone": "+13852926330",
+        "treatment_needed": "cleaning",
+        "cycles_overdue": 2,
+        "reliability_score": 0.92,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
+    },
     # --- High priority cleaning patients ---
     {
         "name": "Sarah Kim",
