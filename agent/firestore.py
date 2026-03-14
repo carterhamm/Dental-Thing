@@ -131,6 +131,36 @@ def get_patient_by_phone(phone: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Call Status (live Twilio call state)
+# ---------------------------------------------------------------------------
+
+def update_call_status(
+    status: str,
+    patient_name: str = "",
+    call_sid: str = "",
+) -> None:
+    """Update the live call status doc at call/active.
+
+    The frontend watches this to show real Twilio call state
+    instead of guessing from candidate status.
+
+    Args:
+        status: Twilio call status — "initiated", "ringing", "in-progress",
+                "completed", "no-answer", "busy", "failed", or "idle"
+        patient_name: Who is being called
+        call_sid: Twilio Call SID for reference
+    """
+    if _firestore_available and _db:
+        _db.collection("call").document("active").set({
+            "status": status,
+            "patient_name": patient_name,
+            "call_sid": call_sid,
+        })
+    else:
+        print(f"  [call] {status} — {patient_name}")
+
+
+# ---------------------------------------------------------------------------
 # Schedule (daily view)
 # ---------------------------------------------------------------------------
 

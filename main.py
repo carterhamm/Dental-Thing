@@ -38,6 +38,7 @@ from agent.firestore import (
     update_slot_status,
     seed_schedule,
     update_schedule_slot,
+    update_call_status,
 )
 from agent.mock_data import DEMO_SLOT
 from agent.mock_schedule import CANCELLED_SLOT_ID
@@ -188,6 +189,7 @@ async def reset_demo():
     _is_running = False
     _orchestrator = None
     reset_session()
+    update_call_status("idle")
     return {"status": "reset_complete"}
 
 
@@ -361,6 +363,9 @@ def trigger_voice_call(patient: dict):
         print(f"  PHONE_NUMBER_ID={ELEVENLABS_PHONE_NUMBER_ID or 'MISSING'}")
         return
 
+    # Mark call as initiated in Firestore so frontend shows real state
+    update_call_status("ringing", patient["name"])
+
     import requests
     resp = requests.post(
         "https://api.elevenlabs.io/v1/convai/twilio/outbound-call",
@@ -380,6 +385,54 @@ def trigger_voice_call(patient: dict):
         _phone_to_patient[patient["phone"]] = patient["name"]
     else:
         print(f"[ELEVENLABS] Call failed: {resp.status_code} {resp.text}")
+        update_call_status("failed", patient["name"])
+
+
+@app.post("/webhooks/twilio-status")
+async def twilio_status_webhook(request: Request):
+    """Twilio call status callback — updates Firestore with real call state.
+
+    Configure on your Twilio phone number:
+      Voice -> Status Callback URL:
+      https://dental-agent-production.up.railway.app/webhooks/twilio-status
+    """
+    form = await request.form()
+    call_status = str(form.get("CallStatus", ""))
+    call_sid = str(form.get("CallSid", ""))
+    to_number = str(form.get("To", ""))
+
+    # Look up patient name from phone number
+    patient_name = _phone_to_patient.get(to_number, "")
+    if not patient_name:
+        to_digits = ''.join(c for c in to_number if c.isdigit())[-10:]
+        for phone, name in _phone_to_patient.items():
+            if ''.join(c for c in phone if c.isdigit())[-10:] == to_digits:
+                patient_name = name
+                break
+
+    print(f"[TWILIO STATUS] {call_status} | {patient_name} | {call_sid}")
+
+    # Map Twilio status to our status
+    status_map = {
+        "queued": "ringing",
+        "initiated": "ringing",
+        "ringing": "ringing",
+        "in-progress": "in-progress",
+        "completed": "completed",
+        "no-answer": "no-answer",
+        "busy": "no-answer",
+        "failed": "failed",
+        "canceled": "failed",
+    }
+    mapped = status_map.get(call_status, call_status)
+    update_call_status(mapped, patient_name, call_sid)
+
+    # If call ended without ElevenLabs webhook, handle as no_answer after a delay
+    if mapped in ("no-answer", "failed", "busy"):
+        if patient_name and _is_running:
+            asyncio.create_task(handle_outcome_bg(patient_name, "no_answer"))
+
+    return Response(content="", status_code=204)
 
 
 @app.post("/webhooks/elevenlabs")
@@ -387,6 +440,9 @@ async def elevenlabs_webhook(request: Request, background_tasks: BackgroundTasks
     """ElevenLabs POSTs here when a voice conversation ends."""
     data = await request.json()
     print(f"ElevenLabs webhook: {data}")
+
+    # Call is over — clear the live call status
+    update_call_status("idle")
 
     analysis = data.get("analysis", {})
     call_successful = analysis.get("call_successful", False)
