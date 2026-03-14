@@ -258,7 +258,10 @@ def send_sms(patient: dict, slot: dict):
         to=patient["phone"],
     )
     # Track phone→patient mapping so we can match inbound replies
+    # Store both raw and E.164 format for matching
     _phone_to_patient[patient["phone"]] = patient["name"]
+    digits = ''.join(c for c in patient["phone"] if c.isdigit())[-10:]
+    _phone_to_patient[f"+1{digits}"] = patient["name"]
     print(f"[TWILIO] SMS sent to {patient['name']}: {msg.sid}")
 
 
@@ -349,6 +352,11 @@ def trigger_voice_call(patient: dict):
         return
 
     import requests
+    # Get slot info from the orchestrator for dynamic variables
+    slot = {}
+    if _orchestrator:
+        slot = getattr(_orchestrator, 'slot', {}) or {}
+
     resp = requests.post(
         "https://api.elevenlabs.io/v1/convai/twilio/outbound-call",
         headers={
@@ -359,6 +367,12 @@ def trigger_voice_call(patient: dict):
             "agent_id": ELEVENLABS_AGENT_ID,
             "agent_phone_number_id": ELEVENLABS_PHONE_NUMBER_ID,
             "to_number": patient["phone"],
+            "conversation_initiation_client_data": {
+                "patient_name": patient["name"],
+                "slot_time": slot.get("time", "today"),
+                "slot_treatment": slot.get("treatment", "cleaning"),
+                "slot_date": slot.get("date", "Today"),
+            },
         },
     )
     if resp.ok:
