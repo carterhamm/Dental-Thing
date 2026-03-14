@@ -11,7 +11,7 @@ import { StatsBar } from './components/dashboard/StatsBar';
 import { onSessionChange, seedSessionData } from './lib/firestore';
 import type { SessionData } from './lib/firestore';
 
-const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+const BACKEND = import.meta.env.VITE_BACKEND_URL || 'https://dental-agent-production.up.railway.app';
 
 type View = 'dashboard' | 'patients' | 'activity' | 'settings';
 
