@@ -24,13 +24,13 @@ import uuid
 _db = None
 
 
-def init_firestore(service_account_path: str | None = None):
+def init_firestore(service_account: str | dict | None = None):
     """
     Initialize Firebase connection.
 
     Args:
-        service_account_path: Path to service account JSON file.
-            If None, uses GOOGLE_APPLICATION_CREDENTIALS env var.
+        service_account: Path to service account JSON file, a dict of credentials,
+            or None to use GOOGLE_APPLICATION_CREDENTIALS env var.
     """
     global _db
 
@@ -39,11 +39,13 @@ def init_firestore(service_account_path: str | None = None):
 
     # Avoid re-initializing if already done
     if not firebase_admin._apps:
-        if service_account_path:
-            cred = credentials.Certificate(service_account_path)
+        if isinstance(service_account, dict):
+            cred = credentials.Certificate(service_account)
+            firebase_admin.initialize_app(cred)
+        elif isinstance(service_account, str):
+            cred = credentials.Certificate(service_account)
             firebase_admin.initialize_app(cred)
         else:
-            # Use default credentials (GOOGLE_APPLICATION_CREDENTIALS env var)
             firebase_admin.initialize_app()
 
     _db = firestore.client()

@@ -8,14 +8,21 @@ import type { Patient } from './components/dashboard/PatientQueue';
 import { ActivityLog } from './components/dashboard/ActivityLog';
 import type { LogEntry } from './components/dashboard/ActivityLog';
 import { StatsBar } from './components/dashboard/StatsBar';
-import { onSessionChange, seedSessionData } from './lib/firestore';
-import type { SessionData } from './lib/firestore';
+import { IconCheck, IconDollar, IconPhone, IconMessage, IconTooth } from './components/Icons';
+import {
+  seedSessionData,
+  onSlotChange,
+  onAgentChange,
+  onCandidatesChange,
+  onActivityChange,
+} from './lib/firestore';
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'https://dental-agent-production.up.railway.app';
 
 type View = 'dashboard' | 'patients' | 'activity' | 'settings';
 
 // --- Mapping helpers ---
+
 function mapSlotStatus(s?: string): 'open' | 'booking' | 'filled' {
   if (s === 'filled') return 'filled';
   if (s === 'filling') return 'booking';
@@ -30,15 +37,23 @@ function mapCandidateStatus(s: string): Patient['status'] {
   return m[s] || 'queued';
 }
 
-function derivePhase(data: SessionData): AgentPhase {
-  if (data.agent_status === 'complete' || data.slot?.status === 'filled') return 'filled';
-  if (data.agent_status !== 'running') return 'idle';
-  const c = data.candidates || [];
-  const a = c.find(x => x.status === 'calling' || x.status === 'texting');
-  if (a?.status === 'calling') return 'calling';
-  if (a?.status === 'texting') return 'sms_sent';
-  if (c.some(x => x.status === 'confirmed')) return 'filled';
+function derivePhase(agentStatus: string, candidates: Patient[]): AgentPhase {
+  if (agentStatus === 'complete') return 'filled';
+  if (agentStatus === 'failed') return 'idle';
+  if (agentStatus !== 'running') return 'idle';
+  const active = candidates.find(c => c.status === 'calling' || c.status === 'sms_sent');
+  if (active?.status === 'calling') return 'calling';
+  if (active?.status === 'sms_sent') return 'sms_sent';
+  if (candidates.some(c => c.status === 'confirmed')) return 'filled';
   return 'calling';
+}
+
+function fmtTs(ts: any): string {
+  try {
+    const d = ts?.toDate ? ts.toDate() : new Date(ts);
+    const h = d.getHours();
+    return `${h > 12 ? h - 12 : h}:${d.getMinutes().toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+  } catch { return ''; }
 }
 
 function actIcon(t: string) {
@@ -49,17 +64,10 @@ function actType(t: string): LogEntry['type'] {
   return { call_outcome: 'call' as const, sms_sent: 'sms' as const, success: 'success' as const, error: 'warning' as const }[t] || 'system';
 }
 
-function fmtTs(ts: string) {
-  try { const d = new Date(ts); const h = d.getHours(); return `${h > 12 ? h - 12 : h}:${d.getMinutes().toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`; }
-  catch { return ''; }
-}
-
 function now() {
   const d = new Date(), h = d.getHours(), m = d.getMinutes().toString().padStart(2, '0');
   return `${h > 12 ? h - 12 : h}:${m} ${h >= 12 ? 'PM' : 'AM'}`;
 }
-
-import { IconCheck, IconDollar, IconPhone, IconMessage, IconTooth } from './components/Icons';
 
 function App() {
   const [view, setView] = useState<View>('dashboard');
@@ -70,12 +78,7 @@ function App() {
   const [slotTime, setSlotTime] = useState('—');
   const [slotFilledBy, setSlotFilledBy] = useState<string | undefined>();
   const [recovered, setRecovered] = useState(0);
-  const [callCount, setCallCount] = useState(0);
-  const [smsCount, setSmsCount] = useState(0);
-  const [filledCount, setFilledCount] = useState(0);
-  const [currentPatient, setCurrentPatient] = useState('');
-  const [attempt, setAttempt] = useState(0);
-  const [totalPatients, setTotalPatients] = useState(0);
+  const [agentStatusRaw, setAgentStatusRaw] = useState('idle');
   const [triggering, setTriggering] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
 
@@ -84,55 +87,76 @@ function App() {
     setTimeout(() => setToast(null), 3000);
   }, []);
 
-  // Firestore listener
+  // Firestore listeners — individual collections (matches Eddy's backend writes)
   useEffect(() => {
-    const unsub = onSessionChange((data) => {
-      if (!data) return;
-      setSlotStatus(mapSlotStatus(data.slot?.status));
-      setSlotTime(data.slot?.time || '—');
-      setSlotFilledBy(data.slot?.filled_by || undefined);
-      setPhase(derivePhase(data));
-      setRecovered(data.recovered || 0);
-      const c = data.candidates || [];
-      setTotalPatients(c.length);
-      setPatients(c.map(x => ({
-        name: x.name, phone: x.phone,
-        lastCleaning: `${x.days_overdue}d overdue`,
-        status: mapCandidateStatus(x.status),
-      })));
-      const ai = c.findIndex(x => x.status === 'calling' || x.status === 'texting');
-      if (ai >= 0) { setCurrentPatient(c[ai].name); setAttempt(ai + 1); }
-      else { const lt = c.findIndex(x => x.status !== 'waiting'); setAttempt(lt >= 0 ? lt + 1 : 0); setCurrentPatient(lt >= 0 ? c[lt].name : ''); }
-      setCallCount(c.filter(x => x.status !== 'waiting').length);
-      setSmsCount(c.filter(x => ['texting', 'no_reply'].includes(x.status)).length);
-      setFilledCount(c.filter(x => x.status === 'confirmed').length);
-      const acts = data.activity || [];
-      setLog([...acts].reverse().map(a => ({ time: fmtTs(a.timestamp), icon: actIcon(a.type), message: a.text, type: actType(a.type) })));
-    });
-    return () => unsub();
+    const unsubs = [
+      onSlotChange((slot) => {
+        if (!slot) return;
+        setSlotStatus(mapSlotStatus(slot.status));
+        setSlotTime(slot.time || '—');
+        setSlotFilledBy(slot.filled_by || undefined);
+      }),
+      onAgentChange((agent) => {
+        if (!agent) return;
+        setAgentStatusRaw(agent.status || 'idle');
+        setRecovered(agent.recovered || 0);
+      }),
+      onCandidatesChange((candidates) => {
+        const mapped = candidates.map(c => ({
+          name: c.name,
+          phone: c.phone,
+          lastCleaning: `${c.days_overdue}d overdue`,
+          status: mapCandidateStatus(c.status),
+        }));
+        setPatients(mapped);
+      }),
+      onActivityChange((entries) => {
+        setLog(entries.map(a => ({
+          time: fmtTs(a.timestamp),
+          icon: actIcon(a.type),
+          message: a.text,
+          type: actType(a.type),
+        })));
+      }),
+    ];
+    return () => unsubs.forEach(u => u());
   }, []);
+
+  // Derive agent phase from raw status + candidates
+  useEffect(() => {
+    setPhase(derivePhase(agentStatusRaw, patients));
+  }, [agentStatusRaw, patients]);
+
+  // Compute stats from candidates
+  const callCount = patients.filter(p => p.status !== 'queued').length;
+  const smsCount = patients.filter(p => p.status === 'sms_sent').length;
+  const filledCount = patients.filter(p => p.status === 'confirmed').length;
+  const currentPatient = patients.find(p => p.status === 'calling' || p.status === 'sms_sent')?.name
+    || patients.find(p => p.status !== 'queued')?.name || '';
+  const attempt = patients.findIndex(p => p.status === 'calling' || p.status === 'sms_sent');
+  const attemptNum = attempt >= 0 ? attempt + 1 : callCount;
 
   const triggerCancellation = useCallback(async () => {
     setTriggering(true);
     try {
       const res = await fetch(`${BACKEND}/cancellation`, { method: 'POST' });
-      if (res.ok) { showToast('Agent started — filling cancellation slot', 'ok'); }
-      else { showToast(`Backend error: ${res.status}`, 'err'); }
-    } catch {
-      showToast(`Cannot reach backend at ${BACKEND}`, 'err');
-    } finally {
-      setTimeout(() => setTriggering(false), 2000);
-    }
+      if (res.ok) {
+        const data = await res.json();
+        showToast(data.status === 'already_running' ? 'Agent is already running' : 'Agent started — filling cancellation slot', 'ok');
+      } else { showToast(`Backend error: ${res.status}`, 'err'); }
+    } catch { showToast(`Cannot reach backend at ${BACKEND}`, 'err'); }
+    finally { setTimeout(() => setTriggering(false), 2000); }
   }, [showToast]);
 
   const handleMenuAction = useCallback(async (action: string) => {
     if (action === 'seed') {
-      try { await seedSessionData(); showToast('Session data seeded to Firestore', 'ok'); }
-      catch { showToast('Failed to seed — check Firebase console', 'err'); }
+      try { await seedSessionData(); showToast('Database initialized', 'ok'); }
+      catch { showToast('Failed — check Firebase console', 'err'); }
     }
     if (action === 'reset') {
-      try { await fetch(`${BACKEND}/reset`, { method: 'POST' }); } catch {}
-      try { await seedSessionData(); showToast('Agent reset', 'ok'); } catch {}
+      try { await fetch(`${BACKEND}/reset`, { method: 'POST' }); showToast('Agent reset', 'ok'); }
+      catch { showToast('Backend unreachable — reset locally', 'err'); }
+      try { await seedSessionData(); } catch {}
     }
   }, [showToast]);
 
@@ -207,12 +231,11 @@ function App() {
               { label: 'Texts', value: smsCount, accent: 'purple', icon: <IconMessage /> },
             ]} />
             <div className="col-span-2"><CancellationSlot status={slotStatus} bookedBy={slotFilledBy} slotTime={slotTime} /></div>
-            <div className="col-span-2"><AgentStatus phase={phase} currentPatient={currentPatient} attempt={attempt} totalPatients={totalPatients} /></div>
+            <div className="col-span-2"><AgentStatus phase={phase} currentPatient={currentPatient} attempt={attemptNum} totalPatients={patients.length} /></div>
             <div className="col-span-2"><PatientQueue patients={patients} /></div>
             <div className="col-span-2"><ActivityLog entries={log} /></div>
           </div>
         )}
-
         {view === 'patients' && (
           <div className="h-full animate-fadeIn">
             <div className="flex items-center justify-between mb-4">
@@ -222,7 +245,6 @@ function App() {
             <div className="h-[calc(100%-48px)]"><PatientQueue patients={patients} /></div>
           </div>
         )}
-
         {view === 'activity' && (
           <div className="h-full animate-fadeIn">
             <div className="flex items-center justify-between mb-4">
@@ -232,11 +254,9 @@ function App() {
             <div className="h-[calc(100%-48px)]"><ActivityLog entries={log} /></div>
           </div>
         )}
-
         {view === 'settings' && (
           <div className="max-w-2xl mx-auto pt-8 animate-fadeIn space-y-6">
             <h1 className="text-xl font-bold text-gray-900 mb-6">Settings</h1>
-
             <div className="bg-white rounded-2xl p-6" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
               <h2 className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase mb-4">Backend</h2>
               <div className="space-y-3">
@@ -244,42 +264,26 @@ function App() {
                   <label className="text-[12px] text-gray-500 font-medium">API URL</label>
                   <div className="mt-1 px-3 py-2 rounded-lg bg-gray-50 border border-gray-200 text-[13px] font-mono text-gray-700">{BACKEND}</div>
                 </div>
-                <p className="text-[11px] text-gray-400">Set <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">VITE_BACKEND_URL</code> in your <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">.env</code> file.</p>
               </div>
             </div>
-
             <div className="bg-white rounded-2xl p-6" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
               <h2 className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase mb-4">Twilio Webhook</h2>
               <div className="space-y-3">
                 <div>
                   <label className="text-[12px] text-gray-500 font-medium">Messaging Webhook URL</label>
-                  <div className="mt-1 px-3 py-2 rounded-lg bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[13px] font-mono text-[#0097A7]">
-                    {BACKEND}/webhooks/twilio-sms
-                  </div>
+                  <div className="mt-1 px-3 py-2 rounded-lg bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[13px] font-mono text-[#0097A7]">{BACKEND}/webhooks/twilio-sms</div>
                 </div>
                 <div>
-                  <label className="text-[12px] text-gray-500 font-medium">Voice Call Outcome Webhook</label>
-                  <div className="mt-1 px-3 py-2 rounded-lg bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[13px] font-mono text-[#0097A7]">
-                    {BACKEND}/call-outcome
-                  </div>
+                  <label className="text-[12px] text-gray-500 font-medium">Voice Outcome Webhook</label>
+                  <div className="mt-1 px-3 py-2 rounded-lg bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[13px] font-mono text-[#0097A7]">{BACKEND}/call-outcome</div>
                 </div>
-                <p className="text-[11px] text-gray-400">
-                  Twilio Console → Phone Numbers → (385) 300-0856 → Messaging → "A message comes in" → paste the webhook URL above. Method: POST.
-                </p>
               </div>
             </div>
-
             <div className="bg-white rounded-2xl p-6" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
               <h2 className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase mb-4">Quick Actions</h2>
               <div className="flex gap-3">
-                <button onClick={() => handleMenuAction('seed')}
-                  className="px-4 py-2 rounded-xl bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[12px] font-semibold text-[#0097A7] hover:bg-[#7DF9FF]/20 transition-colors cursor-pointer">
-                  Seed Data
-                </button>
-                <button onClick={() => handleMenuAction('reset')}
-                  className="px-4 py-2 rounded-xl bg-red-50 border border-red-100 text-[12px] font-semibold text-red-500 hover:bg-red-100 transition-colors cursor-pointer">
-                  Reset Agent
-                </button>
+                <button onClick={() => handleMenuAction('seed')} className="px-4 py-2 rounded-xl bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[12px] font-semibold text-[#0097A7] hover:bg-[#7DF9FF]/20 transition-colors cursor-pointer">Initialize Database</button>
+                <button onClick={() => handleMenuAction('reset')} className="px-4 py-2 rounded-xl bg-red-50 border border-red-100 text-[12px] font-semibold text-red-500 hover:bg-red-100 transition-colors cursor-pointer">Reset Agent</button>
               </div>
             </div>
           </div>

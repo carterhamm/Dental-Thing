@@ -51,16 +51,23 @@ def get_orchestrator() -> Orchestrator:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Firebase on startup."""
-    service_account_path = os.environ.get(
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "serviceAccountKey.json",
-    )
-    if os.path.exists(service_account_path):
-        init_firestore(service_account_path)
-        print(f"Firebase initialized with {service_account_path}")
+    import base64
+    import json
+
+    # Option 1: Base64-encoded service account (Railway)
+    sa_base64 = os.environ.get("FIREBASE_SERVICE_ACCOUNT_BASE64")
+    if sa_base64:
+        sa_dict = json.loads(base64.b64decode(sa_base64))
+        init_firestore(sa_dict)
+        print("Firebase initialized from FIREBASE_SERVICE_ACCOUNT_BASE64")
     else:
-        print(f"WARNING: {service_account_path} not found. Firebase not initialized.")
-        print("Set GOOGLE_APPLICATION_CREDENTIALS or place serviceAccountKey.json in project root.")
+        # Option 2: File path
+        sa_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "serviceAccountKey.json")
+        if os.path.exists(sa_path):
+            init_firestore(sa_path)
+            print(f"Firebase initialized from {sa_path}")
+        else:
+            print("WARNING: No Firebase credentials found. Set FIREBASE_SERVICE_ACCOUNT_BASE64 or GOOGLE_APPLICATION_CREDENTIALS.")
     yield
 
 
