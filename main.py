@@ -19,6 +19,9 @@ Run locally:
 """
 
 import os
+import json
+import base64
+import tempfile
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -32,7 +35,7 @@ load_dotenv()
 
 from agent.firestore import init_firestore, reset_session, get_patient_by_phone
 from orchestrator import Orchestrator
-from comms import send_sms, make_voice_call, SERVER_URL
+from comms import send_sms, make_voice_call
 
 
 # --- Orchestrator singleton ---
@@ -57,10 +60,9 @@ def get_orchestrator() -> Orchestrator:
     return _orchestrator
 
 
-# --- Real comms callbacks ---
+# --- Comms callbacks (graceful when not configured) ---
 
 def _do_voice_call(candidate: dict) -> None:
-    """Actually call the patient via ElevenLabs."""
     try:
         result = make_voice_call(
             to_phone=candidate["phone"],
@@ -69,13 +71,12 @@ def _do_voice_call(candidate: dict) -> None:
             treatment=SLOT["treatment"],
         )
         if not result["success"]:
-            print(f"Voice call failed: {result.get('error')}")
+            print(f"Voice call note: {result.get('error')}")
     except Exception as e:
         print(f"Voice call error: {e}")
 
 
 def _do_sms(candidate: dict, slot: dict) -> None:
-    """Actually text the patient via Twilio."""
     try:
         sid = send_sms(
             to_phone=candidate["phone"],
@@ -83,23 +84,45 @@ def _do_sms(candidate: dict, slot: dict) -> None:
             slot_time=slot.get("time", SLOT["time"]),
             treatment=slot.get("treatment", SLOT["treatment"]),
         )
-        print(f"SMS sent: {sid}")
+        if sid:
+            print(f"SMS sent: {sid}")
     except Exception as e:
         print(f"SMS error: {e}")
 
 
-# --- App Setup ---
+# --- Firebase init (supports file path OR base64 env var for Railway) ---
+
+def _init_firebase():
+    """Initialize Firebase from file or FIREBASE_SERVICE_ACCOUNT_BASE64 env var."""
+    # Option 1: base64-encoded service account JSON (for Railway/cloud deploy)
+    b64 = os.environ.get("FIREBASE_SERVICE_ACCOUNT_BASE64", "")
+    if b64:
+        try:
+            decoded = base64.b64decode(b64)
+            sa_dict = json.loads(decoded)
+            # Write to temp file for firebase-admin
+            tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+            json.dump(sa_dict, tmp)
+            tmp.close()
+            init_firestore(tmp.name)
+            print("Firebase initialized from FIREBASE_SERVICE_ACCOUNT_BASE64")
+            return
+        except Exception as e:
+            print(f"Failed to decode FIREBASE_SERVICE_ACCOUNT_BASE64: {e}")
+
+    # Option 2: file path
+    path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "serviceAccountKey.json")
+    if os.path.exists(path):
+        init_firestore(path)
+        print(f"Firebase initialized from {path}")
+    else:
+        print(f"No Firebase credentials found. Dashboard won't update but agent still works.")
+        init_firestore(None)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    service_account_path = os.environ.get(
-        "GOOGLE_APPLICATION_CREDENTIALS", "serviceAccountKey.json"
-    )
-    if os.path.exists(service_account_path):
-        init_firestore(service_account_path)
-        print(f"Firebase initialized with {service_account_path}")
-    else:
-        print(f"WARNING: {service_account_path} not found.")
+    _init_firebase()
     yield
 
 
