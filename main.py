@@ -2,13 +2,13 @@
 FastAPI server — the deployed backend for the dental rescheduling agent.
 
 Endpoints:
-  POST /cancellation           → Start the Claude agent
-  POST /call-outcome           → Voice call outcome (webhook or manual)
-  POST /sms-reply              → SMS reply (webhook or manual)
-  POST /webhooks/twilio-sms    → Twilio inbound SMS webhook
-  POST /webhooks/elevenlabs    → ElevenLabs post-call webhook
-  POST /reset                  → Reset demo state
-  GET  /                       → Health check
+  POST /cancellation           -> Start the Claude agent
+  POST /call-outcome           -> Voice call outcome (webhook or manual)
+  POST /sms-reply              -> SMS reply (webhook or manual)
+  POST /webhooks/twilio-sms    -> Twilio inbound SMS webhook
+  POST /webhooks/elevenlabs    -> ElevenLabs post-call webhook
+  POST /reset                  -> Reset demo state
+  GET  /                       -> Health check
 
 Run locally:
   uvicorn main:app --reload --port 8000
@@ -56,7 +56,7 @@ def get_orchestrator() -> Orchestrator:
     return _orchestrator
 
 
-# --- Firebase init (supports file path OR base64 env var for Railway) ---
+# --- Firebase init (supports file path, dict, OR base64 env var for Railway) ---
 
 def _init_firebase():
     """Initialize Firebase from file or FIREBASE_SERVICE_ACCOUNT_BASE64 env var."""
@@ -65,10 +65,8 @@ def _init_firebase():
         try:
             decoded = base64.b64decode(b64)
             sa_dict = json.loads(decoded)
-            tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-            json.dump(sa_dict, tmp)
-            tmp.close()
-            init_firestore(tmp.name)
+            # init_firestore now accepts dicts directly
+            init_firestore(sa_dict)
             print("Firebase initialized from FIREBASE_SERVICE_ACCOUNT_BASE64")
             return
         except Exception as e:
@@ -142,7 +140,7 @@ async def call_outcome(body: CallOutcome, background_tasks: BackgroundTasks):
     if not _is_running:
         return {"status": "agent_not_running"}
 
-    # reschedule_request → declined (but we log the preferred time for follow-up)
+    # reschedule_request -> declined (but we log the preferred time for follow-up)
     status_map = {
         "confirmed": "confirmed",
         "declined": "declined",
@@ -268,21 +266,39 @@ def send_sms(patient: dict, slot: dict):
 
 @app.post("/webhooks/twilio-sms")
 async def twilio_sms_webhook(request: Request):
-    """Twilio inbound SMS webhook."""
+    """Twilio inbound SMS webhook.
+
+    Configure in Twilio Console:
+      Phone Numbers -> your number -> Messaging ->
+      'A MESSAGE COMES IN' -> Webhook URL:
+      https://dental-agent-production.up.railway.app/webhooks/twilio-sms  (POST)
+    """
     form = await request.form()
-    from_number = form.get("From", "")
-    body_text = form.get("Body", "")
+    from_number = str(form.get("From", ""))
+    body_text = str(form.get("Body", ""))
 
-    print(f"Twilio SMS from {from_number}: {body_text}")
+    print(f"[TWILIO INBOUND] From={from_number} Body='{body_text}'")
 
-    # Try in-memory lookup first (populated when we send SMS)
+    # Look up patient by phone number -- check in-memory map first
     patient_name = _phone_to_patient.get(from_number, "")
+
+    # Fuzzy match: strip formatting and compare last 10 digits
     if not patient_name:
-        # Try fuzzy match on last 10 digits
-        stripped = from_number.lstrip("+1")
+        from_digits = ''.join(c for c in from_number if c.isdigit())[-10:]
         for phone, name in _phone_to_patient.items():
-            if phone.replace("-", "").replace(" ", "").replace("(", "").replace(")", "").endswith(stripped[-10:]):
+            phone_digits = ''.join(c for c in phone if c.isdigit())[-10:]
+            if from_digits == phone_digits:
                 patient_name = name
+                break
+
+    # If still no match, check orchestrator's candidates directly
+    if not patient_name and _orchestrator and _orchestrator.candidates:
+        from_digits = ''.join(c for c in from_number if c.isdigit())[-10:]
+        for c in _orchestrator.candidates:
+            c_digits = ''.join(ch for ch in c.get("phone", "") if ch.isdigit())[-10:]
+            if from_digits == c_digits:
+                patient_name = c["name"]
+                _phone_to_patient[from_number] = patient_name
                 break
 
     # Fallback to Firestore lookup
@@ -291,48 +307,69 @@ async def twilio_sms_webhook(request: Request):
         if patient:
             patient_name = patient["name"]
 
-    if not patient_name:
-        print(f"[TWILIO] Unknown sender: {from_number} said '{body_text}'")
-        return Response(content='<Response></Response>', media_type="application/xml")
-
+    # Parse yes/no
     reply_lower = body_text.lower().strip()
-    if reply_lower in ("yes", "y", "yeah", "sure", "ok", "okay", "yep", "absolutely"):
+    if reply_lower in ("yes", "y", "yeah", "sure", "ok", "okay", "yep", "absolutely", "yes please", "yea"):
         new_status = "confirmed"
+    elif reply_lower in ("no", "n", "nope", "can't", "cannot", "no thanks", "no thank you"):
+        new_status = "declined"
     else:
         new_status = "declined"
 
-    if _is_running:
+    if patient_name and _is_running:
+        print(f"[TWILIO] Matched: {patient_name} -> {new_status}")
         asyncio.create_task(handle_outcome_bg(patient_name, new_status))
+    elif not patient_name:
+        print(f"[TWILIO] Could not match sender {from_number} to any patient")
 
-    return Response(content='<Response></Response>', media_type="application/xml")
+    # Twilio expects TwiML response
+    if patient_name and new_status == "confirmed":
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Great! You\'re booked. We\'ll see you soon!</Message></Response>'
+    elif patient_name and new_status == "declined":
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Message>No worries, thanks for letting us know!</Message></Response>'
+    elif not patient_name:
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Hi! This is the dental office. If you have questions, please call us during business hours.</Message></Response>'
+    else:
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+    return Response(content=twiml, media_type="application/xml")
 
 
 # --- ElevenLabs Voice Calls ---
 
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_AGENT_ID = os.environ.get("ELEVENLABS_AGENT_ID", "")
+ELEVENLABS_PHONE_NUMBER_ID = os.environ.get("ELEVENLABS_PHONE_NUMBER_ID", "")
 
 
 def trigger_voice_call(patient: dict):
-    """Trigger outbound voice call via ElevenLabs. No-ops if not configured."""
-    if not ELEVENLABS_API_KEY or not ELEVENLABS_AGENT_ID:
+    """Trigger outbound voice call via ElevenLabs Conversational AI + Twilio.
+
+    Uses POST /v1/convai/twilio/outbound-call
+    Requires: ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, ELEVENLABS_PHONE_NUMBER_ID
+    """
+    if not ELEVENLABS_API_KEY or not ELEVENLABS_AGENT_ID or not ELEVENLABS_PHONE_NUMBER_ID:
         print(f"[NO ELEVENLABS] Would call {patient['name']} at {patient['phone']}")
+        print(f"  API_KEY={'set' if ELEVENLABS_API_KEY else 'MISSING'}")
+        print(f"  AGENT_ID={ELEVENLABS_AGENT_ID or 'MISSING'}")
+        print(f"  PHONE_NUMBER_ID={ELEVENLABS_PHONE_NUMBER_ID or 'MISSING'}")
         return
 
     import requests
     resp = requests.post(
-        "https://api.elevenlabs.io/v1/convai/conversation/create-call",
+        "https://api.elevenlabs.io/v1/convai/twilio/outbound-call",
         headers={
             "xi-api-key": ELEVENLABS_API_KEY,
             "Content-Type": "application/json",
         },
         json={
             "agent_id": ELEVENLABS_AGENT_ID,
-            "customer_number": patient["phone"],
+            "agent_phone_number_id": ELEVENLABS_PHONE_NUMBER_ID,
+            "to_number": patient["phone"],
         },
     )
     if resp.ok:
-        print(f"[ELEVENLABS] Call initiated to {patient['name']}: {resp.json()}")
+        data = resp.json()
+        print(f"[ELEVENLABS] Call initiated to {patient['name']}: {data}")
         _phone_to_patient[patient["phone"]] = patient["name"]
     else:
         print(f"[ELEVENLABS] Call failed: {resp.status_code} {resp.text}")

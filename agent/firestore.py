@@ -19,8 +19,13 @@ _db = None
 _firestore_available = False
 
 
-def init_firestore(service_account_path: str | None = None):
-    """Initialize Firebase connection. Optional — agent works without it."""
+def init_firestore(service_account: str | dict | None = None):
+    """Initialize Firebase connection. Optional — agent works without it.
+
+    Args:
+        service_account: Path to service account JSON file, a dict of credentials,
+            or None to use GOOGLE_APPLICATION_CREDENTIALS env var.
+    """
     global _db, _firestore_available
 
     try:
@@ -28,8 +33,11 @@ def init_firestore(service_account_path: str | None = None):
         from firebase_admin import credentials, firestore
 
         if not firebase_admin._apps:
-            if service_account_path and os.path.exists(service_account_path):
-                cred = credentials.Certificate(service_account_path)
+            if isinstance(service_account, dict):
+                cred = credentials.Certificate(service_account)
+                firebase_admin.initialize_app(cred)
+            elif isinstance(service_account, str):
+                cred = credentials.Certificate(service_account)
                 firebase_admin.initialize_app(cred)
             else:
                 firebase_admin.initialize_app()
@@ -66,7 +74,7 @@ def add_activity(activity_type: str, text: str) -> None:
 def update_agent_status(status: str) -> None:
     """Update the agent status document at agent/status."""
     if _firestore_available and _db:
-        _db.document("agent/status").set({"status": status}, merge=True)
+        _db.collection("agent").document("status").set({"status": status}, merge=True)
     else:
         print(f"  [agent] status={status}")
 
@@ -81,7 +89,7 @@ def update_slot_status(status: str, filled_by: str | None = None) -> None:
         updates = {"status": status}
         if filled_by is not None:
             updates["filled_by"] = filled_by
-        _db.document("slots/active").set(updates, merge=True)
+        _db.collection("slots").document("active").set(updates, merge=True)
     else:
         msg = f"  [slot] → {status}"
         if filled_by:
@@ -107,7 +115,7 @@ def update_candidates(candidates: list[dict]) -> None:
 def update_recovered(amount: int) -> None:
     """Update the recovered revenue on the agent/status document."""
     if _firestore_available and _db:
-        _db.document("agent/status").set({"recovered": amount}, merge=True)
+        _db.collection("agent").document("status").set({"recovered": amount}, merge=True)
     else:
         print(f"  [recovered] ${amount}")
 
@@ -139,8 +147,8 @@ def initialize_session(slot: dict, recall_list: list[dict] | None = None) -> lis
     candidates = score_candidates(recall_list, slot)
 
     if _firestore_available and _db:
-        _db.document("slots/active").set({**slot, "status": "filling"})
-        _db.document("agent/status").set({"status": "running", "recovered": 0})
+        _db.collection("slots").document("active").set({**slot, "status": "filling"})
+        _db.collection("agent").document("status").set({"status": "running", "recovered": 0})
         update_candidates(candidates)
 
     add_activity("event", f"Scoring {len(candidates)} candidates for {slot.get('treatment', 'appointment')}")
@@ -162,7 +170,7 @@ def reset_session() -> None:
             doc.reference.delete()
 
         # Reset slot
-        _db.document("slots/active").set({
+        _db.collection("slots").document("active").set({
             "id": "slot_001",
             "time": "2:00 PM",
             "date": "Today",
@@ -173,7 +181,7 @@ def reset_session() -> None:
         })
 
         # Reset agent status
-        _db.document("agent/status").set({
+        _db.collection("agent").document("status").set({
             "status": "idle",
             "recovered": 0,
         })
