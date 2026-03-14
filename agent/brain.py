@@ -30,39 +30,87 @@ def score_candidate(patient: dict, slot: dict) -> int:
 
     Higher score = higher priority to contact.
 
-    Scoring factors (in order of importance):
-    1. Treatment match: +150 bonus / -200 penalty (dominant factor)
-    2. Days overdue × 2: More overdue = higher priority (capped at 60 days)
-    3. Reliability × 30: More reliable patients get bonus
-
-    The treatment match is intentionally the strongest factor because
-    you can't do a crown in a cleaning slot - treatment must match.
+    Scoring factors:
+    1. Cycles overdue × 40: More cycles missed = higher urgency
+    2. Treatment match: +50 bonus / -20 penalty
+    3. Reliability × 20: More reliable patients get bonus
+    4. Time of day match: +10 if patient's preferred time matches slot
+    5. Pending treatment: +25 if patient has unfinished treatment
 
     Args:
         patient: Patient dict with keys:
             - treatment_needed: str
-            - days_overdue: int
+            - cycles_overdue: int
             - reliability_score: float (0-1)
+            - preferred_time_of_day: "morning" | "afternoon" | "evening"
+            - pending_treatment: bool
         slot: Slot dict with keys:
             - treatment: str
+            - time: str (e.g., "2:00 PM")
 
     Returns:
         Integer score (higher = better candidate)
     """
-    # Cap days_overdue at 60 to prevent extremely overdue patients from
-    # dominating over treatment match
-    days_factor = min(patient["days_overdue"], 60) * 2
+    score = 0
 
-    # Treatment match is the most important factor
+    # Cycles overdue: each missed cycle adds urgency (capped at 4 cycles)
+    cycles = min(patient.get("cycles_overdue", 1), 4)
+    score += cycles * 25
+
+    # Treatment match is still the dominant factor
+    # You can't do a crown in a cleaning slot
     if patient["treatment_needed"] == slot["treatment"]:
-        treatment_factor = 150
+        score += 100
     else:
-        treatment_factor = -200
+        score -= 50
 
-    # Reliability bonus (scaled to 0-30 range)
-    reliability_factor = int(patient["reliability_score"] * 30)
+    # Reliability bonus (scaled to 0-20 range)
+    score += int(patient.get("reliability_score", 0.5) * 20)
 
-    return days_factor + treatment_factor + reliability_factor
+    # Time of day matching
+    slot_time = slot.get("time", "12:00 PM")
+    slot_tod = _get_time_of_day(slot_time)
+    if patient.get("preferred_time_of_day") == slot_tod:
+        score += 10
+
+    # Pending treatment bonus (urgency for unfinished work)
+    if patient.get("pending_treatment", False):
+        score += 25
+
+    return score
+
+
+def _get_time_of_day(time_str: str) -> str:
+    """
+    Convert a time string to time of day category.
+
+    Args:
+        time_str: Time like "2:00 PM" or "10:30 AM"
+
+    Returns:
+        "morning" (before 12pm), "afternoon" (12pm-5pm), or "evening" (after 5pm)
+    """
+    # Parse hour from time string
+    time_str = time_str.upper().strip()
+    try:
+        # Handle "2:00 PM" format
+        if "PM" in time_str:
+            hour = int(time_str.split(":")[0])
+            if hour != 12:
+                hour += 12
+        else:  # AM
+            hour = int(time_str.split(":")[0])
+            if hour == 12:
+                hour = 0
+    except (ValueError, IndexError):
+        return "afternoon"  # Default
+
+    if hour < 12:
+        return "morning"
+    elif hour < 17:  # 5 PM
+        return "afternoon"
+    else:
+        return "evening"
 
 
 def score_candidates(recall_list: list[dict], slot: dict) -> list[dict]:
@@ -86,7 +134,10 @@ def score_candidates(recall_list: list[dict], slot: dict) -> list[dict]:
             "name": patient["name"],
             "phone": patient["phone"],
             "treatment_needed": patient["treatment_needed"],
-            "days_overdue": patient["days_overdue"],
+            "cycles_overdue": patient.get("cycles_overdue", 1),
+            "reliability_score": patient.get("reliability_score", 0.5),
+            "preferred_time_of_day": patient.get("preferred_time_of_day", "afternoon"),
+            "pending_treatment": patient.get("pending_treatment", False),
             "score": score_candidate(patient, slot),
             "status": "waiting",
         }
