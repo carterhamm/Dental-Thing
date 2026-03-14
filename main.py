@@ -359,6 +359,40 @@ async def twilio_sms_webhook(request: Request):
     return Response(content=twiml, media_type="application/xml")
 
 
+@app.post("/webhooks/twilio-status")
+async def twilio_status_callback(request: Request):
+    """Twilio voice call status callback.
+
+    Fires when a call's status changes (initiated, ringing, answered, completed, etc.)
+    """
+    form = await request.form()
+    call_status = str(form.get("CallStatus", ""))
+    call_sid = str(form.get("CallSid", ""))
+    to_number = str(form.get("To", ""))
+    duration = str(form.get("CallDuration", "0"))
+
+    print(f"[TWILIO STATUS] CallSid={call_sid} Status={call_status} To={to_number} Duration={duration}s")
+
+    # If call completed/failed/busy/no-answer, we can use this as a fallback
+    # for the ElevenLabs polling (in case polling misses it)
+    if call_status in ("completed", "failed", "busy", "no-answer", "canceled"):
+        # Look up patient by phone number
+        patient_name = ""
+        to_digits = ''.join(c for c in to_number if c.isdigit())[-10:]
+        for phone, name in _phone_to_patient.items():
+            phone_digits = ''.join(c for c in phone if c.isdigit())[-10:]
+            if to_digits == phone_digits:
+                patient_name = name
+                break
+
+        if patient_name and call_status in ("failed", "busy", "no-answer", "canceled"):
+            print(f"[TWILIO STATUS] Call to {patient_name} ended: {call_status} — posting no_answer")
+            if _is_running:
+                asyncio.create_task(handle_outcome_async(patient_name, "no_answer"))
+
+    return Response(content="", status_code=200)
+
+
 # --- ElevenLabs Voice Calls ---
 
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
