@@ -79,14 +79,18 @@ export async function seedSessionData() {
 
 export function onSlotChange(cb: (data: SlotData | null) => void) {
   return onSnapshot(doc(db, 'slots', 'active'), (snap) => {
-    cb(snap.exists() ? (snap.data() as SlotData) : null);
-  }, () => cb(null));
+    const data = snap.exists() ? (snap.data() as SlotData) : null;
+    console.log('[Firestore] slots/active:', data);
+    cb(data);
+  }, (err) => { console.error('[Firestore] slots/active error:', err); cb(null); });
 }
 
 export function onAgentChange(cb: (data: AgentData | null) => void) {
   return onSnapshot(doc(db, 'agent', 'status'), (snap) => {
-    cb(snap.exists() ? (snap.data() as AgentData) : null);
-  }, () => cb(null));
+    const data = snap.exists() ? (snap.data() as AgentData) : null;
+    console.log('[Firestore] agent/status:', data);
+    cb(data);
+  }, (err) => { console.error('[Firestore] agent/status error:', err); cb(null); });
 }
 
 export function onCandidatesChange(cb: (candidates: CandidateData[]) => void) {
@@ -95,21 +99,26 @@ export function onCandidatesChange(cb: (candidates: CandidateData[]) => void) {
     const candidates = snap.docs
       .map(d => d.data() as CandidateData)
       .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+    console.log('[Firestore] patients:', candidates.length, 'candidates');
     cb(candidates);
-  }, () => cb([]));
+  }, (err) => { console.error('[Firestore] patients error:', err); cb([]); });
 }
 
 export function onActivityChange(cb: (entries: ActivityData[]) => void) {
   const q = query(collection(db, 'activity_log'), orderBy('timestamp', 'desc'));
   return onSnapshot(q, (snap) => {
-    cb(snap.docs.map(d => d.data() as ActivityData));
-  }, () => cb([]));
+    const entries = snap.docs.map(d => d.data() as ActivityData);
+    console.log('[Firestore] activity_log:', entries.length, 'entries');
+    cb(entries);
+  }, (err) => { console.error('[Firestore] activity_log error:', err); cb([]); });
 }
 
 export function onScheduleChange(cb: (data: ScheduleData | null) => void) {
   return onSnapshot(doc(db, 'schedule', 'today'), (snap) => {
-    cb(snap.exists() ? (snap.data() as ScheduleData) : null);
-  }, () => cb(null));
+    const data = snap.exists() ? (snap.data() as ScheduleData) : null;
+    console.log('[Firestore] schedule/today:', data?.slots?.length, 'slots');
+    cb(data);
+  }, (err) => { console.error('[Firestore] schedule/today error:', err); cb(null); });
 }
 
 export interface CallStatusData {
