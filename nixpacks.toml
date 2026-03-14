@@ -1,11 +1,8 @@
-# Force Python-only build (ignore package.json)
-providers = ["python"]
-
 [phases.setup]
-nixPkgs = ["python311"]
+nixPkgs = ["python311", "gcc"]
 
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
 
 [start]
-cmd = "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"
+cmd = "python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"
