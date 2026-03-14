@@ -1,10 +1,10 @@
-# CLAUDE-UI.md — Frontend + Voice APIs (UI/Voice Person)
+# CLAUDE-UI.md — Frontend + Comms Execution (UI/Voice Person)
 
 ## Project Overview
 
 Dental rescheduling agent that autonomously fills cancelled appointment slots. When a patient cancels, the AI agent scores candidates, contacts them via voice/SMS, and keeps going until the slot is filled.
 
-**Your role:** Build the React dashboard that displays everything in real-time, set up the Firebase project, and integrate Bland.ai (voice calls) and Twilio (SMS) APIs.
+**Your role:** Build the React dashboard that displays everything in real-time, set up the Firebase project, and execute all outbound communications. You own ElevenLabs (voice calls) and Twilio (SMS). The PM agent writes outreach intents to Firestore — you watch for them and execute.
 
 ---
 
@@ -12,9 +12,9 @@ Dental rescheduling agent that autonomously fills cancelled appointment slots. W
 
 1. **Firebase Setup** — Create project, configure Firestore, share credentials with team
 2. **React Dashboard** — Real-time UI showing schedule, agent activity, candidate queue
-3. **Bland.ai Integration** — Trigger voice calls, handle webhooks
-4. **Twilio Integration** — Send SMS messages
-5. **Vercel Deployment** — Deploy frontend (coordinate with PM on any backend deployment)
+3. **ElevenLabs Integration** — Execute voice calls when PM agent requests them
+4. **Twilio Integration** — Execute SMS when PM agent requests them, handle inbound SMS webhooks
+5. **Vercel Deployment** — Deploy frontend + webhook API routes
 
 ---
 
@@ -22,7 +22,7 @@ Dental rescheduling agent that autonomously fills cancelled appointment slots. W
 
 - **Frontend:** React + Vite + Tailwind CSS
 - **Database:** Firebase Firestore
-- **Voice:** Bland.ai
+- **Voice:** ElevenLabs Conversational AI + Twilio (phone infrastructure)
 - **SMS:** Twilio
 - **Deployment:** Vercel
 
@@ -58,7 +58,7 @@ const firebaseConfig = {
 
 1. Project Settings → Service Accounts → Generate new private key
 2. Download JSON file
-3. Share with Eddy and PM (they need it for `firebase-admin`)
+3. Share with Eddy and Spencer (they need it for `firebase-admin`)
 
 ### Step 4: Share Environment Variables
 
@@ -73,7 +73,7 @@ VITE_FIREBASE_STORAGE_BUCKET=...
 VITE_FIREBASE_MESSAGING_SENDER_ID=...
 VITE_FIREBASE_APP_ID=...
 
-# For Python backend (PM and Eddy need the JSON file path)
+# For Python backend (Spencer and Eddy need the JSON file path)
 GOOGLE_APPLICATION_CREDENTIALS=path/to/serviceAccountKey.json
 ```
 
@@ -94,6 +94,8 @@ Create `sessions/current` document with initial state:
   },
   "activity": [],
   "candidates": [],
+  "pending_action": null,
+  "pending_outcome": null,
   "recovered": 0,
   "agent_status": "idle"
 }
@@ -260,9 +262,226 @@ async function resetDemo() {
     },
     activity: [],
     candidates: [],
+    pending_action: null,
+    pending_outcome: null,
     recovered: 0,
     agent_status: "idle"
   });
+}
+```
+
+---
+
+## Comms Execution Layer (Firestore → Outbound)
+
+**This is the key integration.** The PM agent writes `pending_action` to Firestore. You watch for it and execute.
+
+### Watching for Outreach Requests
+
+```javascript
+import { doc, onSnapshot, updateDoc } from "firebase/firestore";
+import { db } from "../firebase";
+
+// Watch for pending actions from the PM agent
+const sessionRef = doc(db, "sessions", "current");
+
+onSnapshot(sessionRef, (snapshot) => {
+  const data = snapshot.data();
+  const action = data?.pending_action;
+
+  if (action && action.status === "pending") {
+    // Mark as in progress
+    updateDoc(sessionRef, { "pending_action.status": "in_progress" });
+
+    if (action.type === "voice") {
+      executeVoiceCall(action);
+    } else if (action.type === "sms") {
+      executeSMS(action);
+    }
+  }
+});
+```
+
+---
+
+## ElevenLabs Integration (Voice Calls)
+
+You own voice call execution. When the PM agent writes a `pending_action` with `type: "voice"`, you execute it.
+
+### Setting Up ElevenLabs Conversational AI
+
+```javascript
+// ElevenLabs Conversational AI agent setup
+// Create an agent in the ElevenLabs dashboard first, then use the API
+
+async function executeVoiceCall(action) {
+  const sessionRef = doc(db, "sessions", "current");
+
+  try {
+    // Step 1: Initiate call via ElevenLabs Conversational AI API
+    const response = await fetch("https://api.elevenlabs.io/v1/convai/conversations", {
+      method: "POST",
+      headers: {
+        "xi-api-key": process.env.ELEVENLABS_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        agent_id: process.env.ELEVENLABS_AGENT_ID,
+        // ElevenLabs handles the Twilio phone connection
+        conversation_config_override: {
+          agent: {
+            prompt: {
+              prompt: `You are calling ${action.patient_name} from Bright Smile Dental. ${action.message}. Be warm, professional, and concise. If they say yes, confirm the time. If they say no, thank them politely.`
+            },
+            first_message: `Hi ${action.patient_name}, this is an assistant calling from Bright Smile Dental. We had a cancellation and have an opening today at 2 PM for a cleaning. Would you be able to come in?`
+          }
+        }
+      })
+    });
+
+    const callData = await response.json();
+
+    // Step 2: Update Firestore with call status
+    await updateDoc(sessionRef, {
+      "pending_action.status": "in_progress",
+      "pending_action.call_id": callData.conversation_id
+    });
+
+    // Step 3: Outcome comes via ElevenLabs webhook (see below)
+
+  } catch (error) {
+    console.error("ElevenLabs call failed:", error);
+    await updateDoc(sessionRef, {
+      "pending_outcome": {
+        type: "voice",
+        result: "no_answer",
+        details: `Call failed: ${error.message}`,
+        completed_at: new Date().toISOString()
+      }
+    });
+  }
+}
+```
+
+### ElevenLabs Webhook Handler (Vercel API Route)
+
+```javascript
+// api/webhooks/elevenlabs/route.js (Next.js) or api/elevenlabs-webhook.js (Vercel serverless)
+
+import { doc, updateDoc } from "firebase/firestore";
+import { db } from "../../lib/firebase-admin";
+
+export default async function handler(req, res) {
+  const { conversation_id, status, analysis } = req.body;
+
+  // Parse the outcome from ElevenLabs conversation analysis
+  let result = "no_answer";
+  if (status === "completed" && analysis) {
+    // ElevenLabs provides conversation analysis/summary
+    const transcript = analysis.transcript || "";
+    if (analysis.call_successful || transcript.toLowerCase().includes("yes")) {
+      result = "confirmed";
+    } else {
+      result = "declined";
+    }
+  }
+
+  // Write outcome to Firestore — PM agent will pick this up
+  const sessionRef = doc(db, "sessions", "current");
+  await updateDoc(sessionRef, {
+    "pending_outcome": {
+      type: "voice",
+      result: result,
+      details: analysis?.summary || `Call ${status}`,
+      completed_at: new Date().toISOString()
+    }
+  });
+
+  res.status(200).json({ received: true });
+}
+```
+
+---
+
+## Twilio Integration (SMS)
+
+You own SMS execution. When the PM agent writes a `pending_action` with `type: "sms"`, you send it.
+
+### Sending SMS
+
+```javascript
+import twilio from "twilio";
+
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+async function executeSMS(action) {
+  const sessionRef = doc(db, "sessions", "current");
+
+  try {
+    const message = await twilioClient.messages.create({
+      body: action.message,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to: action.phone
+    });
+
+    // Mark action as sent
+    await updateDoc(sessionRef, {
+      "pending_action.status": "sent",
+      "pending_action.twilio_sid": message.sid
+    });
+
+    // Outcome will come via Twilio inbound SMS webhook
+
+  } catch (error) {
+    console.error("Twilio SMS failed:", error);
+    await updateDoc(sessionRef, {
+      "pending_outcome": {
+        type: "sms",
+        result: "no_answer",
+        details: `SMS failed: ${error.message}`,
+        completed_at: new Date().toISOString()
+      }
+    });
+  }
+}
+```
+
+### Handling Inbound SMS (Twilio Webhook → Vercel API Route)
+
+```javascript
+// api/webhooks/twilio-sms/route.js
+
+import { doc, updateDoc } from "firebase/firestore";
+import { db } from "../../lib/firebase-admin";
+
+export default async function handler(req, res) {
+  const { Body, From } = req.body;
+
+  const reply = Body.trim().toUpperCase();
+  let result = "declined";
+
+  if (["YES", "Y", "YEAH", "YEP", "SURE", "OK", "OKAY"].includes(reply)) {
+    result = "confirmed";
+  }
+
+  // Write outcome to Firestore — PM agent will pick this up
+  const sessionRef = doc(db, "sessions", "current");
+  await updateDoc(sessionRef, {
+    "pending_outcome": {
+      type: "sms",
+      result: result,
+      details: `Patient replied: "${Body}"`,
+      phone: From,
+      completed_at: new Date().toISOString()
+    }
+  });
+
+  // Respond to Twilio (required)
+  res.setHeader("Content-Type", "text/xml");
+  res.status(200).send("<Response></Response>");
 }
 ```
 
@@ -335,141 +554,6 @@ const activityTextClass = {
 
 ---
 
-## Bland.ai Integration
-
-You own voice call integration.
-
-### Triggering a Call
-
-```javascript
-// Bland.ai API call
-async function triggerCall(phone, patientName) {
-  const response = await fetch("https://api.bland.ai/v1/calls", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.BLAND_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      phone_number: phone,
-      task: `You are calling ${patientName} from Bright Smile Dental. We had a cancellation and have an opening today at 2 PM for a cleaning. Ask if they would like to take this appointment.`,
-      voice: "maya",
-      webhook: "https://your-webhook-url.com/bland-webhook"
-    })
-  });
-
-  return response.json();
-}
-```
-
-### Handling Webhook
-
-When call completes, Bland.ai sends webhook. Write outcome to Firestore:
-
-```javascript
-// Webhook handler (could be Vercel serverless function)
-export default async function handler(req, res) {
-  const { status, transcripts } = req.body;
-
-  // Parse outcome from call
-  let outcome = "no_answer";
-  if (status === "completed") {
-    // Check transcripts for yes/no
-    outcome = transcripts.includes("yes") ? "confirmed" : "declined";
-  }
-
-  // Write to Firestore
-  // This will trigger PM's agent to continue
-  await updateDoc(doc(db, "sessions", "current"), {
-    "pending_outcome": {
-      type: "call",
-      result: outcome
-    }
-  });
-
-  res.status(200).json({ received: true });
-}
-```
-
----
-
-## Twilio Integration
-
-You own SMS integration.
-
-### Sending SMS
-
-```javascript
-// Twilio API (use their Node SDK or REST API)
-import twilio from "twilio";
-
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
-
-async function sendSMS(phone, patientName) {
-  const message = await client.messages.create({
-    body: `Hi ${patientName}, this is Bright Smile Dental. We have an opening today at 2 PM for a cleaning. Reply YES to book or NO to decline.`,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    to: phone
-  });
-
-  return message.sid;
-}
-```
-
-### Handling SMS Reply (Webhook)
-
-```javascript
-// Twilio webhook handler
-export default async function handler(req, res) {
-  const { Body, From } = req.body;
-
-  const reply = Body.trim().toUpperCase();
-  const outcome = reply === "YES" ? "confirmed" : "declined";
-
-  // Write to Firestore
-  await updateDoc(doc(db, "sessions", "current"), {
-    "pending_outcome": {
-      type: "sms",
-      result: outcome,
-      phone: From
-    }
-  });
-
-  res.status(200).send("<Response></Response>");
-}
-```
-
----
-
-## Vercel Deployment
-
-### Build & Deploy
-
-```bash
-npm run build
-vercel --prod
-```
-
-### Environment Variables (Vercel Dashboard)
-
-```
-VITE_FIREBASE_API_KEY=...
-VITE_FIREBASE_AUTH_DOMAIN=...
-VITE_FIREBASE_PROJECT_ID=...
-VITE_FIREBASE_STORAGE_BUCKET=...
-VITE_FIREBASE_MESSAGING_SENDER_ID=...
-VITE_FIREBASE_APP_ID=...
-BLAND_API_KEY=...
-TWILIO_ACCOUNT_SID=...
-TWILIO_AUTH_TOKEN=...
-TWILIO_PHONE_NUMBER=...
-```
-
----
-
 ## Animations
 
 ### Filling Slot Pulse
@@ -521,30 +605,81 @@ Never show broken or empty UI to judges.
 
 ---
 
+## Vercel Deployment
+
+### Project Structure
+
+```
+dental-dashboard/
+├── src/
+│   ├── App.tsx
+│   ├── firebase.js
+│   ├── hooks/
+│   │   └── useSession.js
+│   └── components/
+│       ├── TopBar.tsx
+│       ├── AppointmentList.tsx
+│       ├── ActivityFeed.tsx
+│       ├── CandidateQueue.tsx
+│       └── RecoveredRevenue.tsx
+├── api/
+│   └── webhooks/
+│       ├── elevenlabs.js          ← ElevenLabs call outcome webhook
+│       └── twilio-sms.js          ← Twilio inbound SMS webhook
+├── package.json
+└── vercel.json
+```
+
+### Build & Deploy
+
+```bash
+npm run build
+vercel --prod
+```
+
+### Environment Variables (Vercel Dashboard)
+
+```
+VITE_FIREBASE_API_KEY=...
+VITE_FIREBASE_AUTH_DOMAIN=...
+VITE_FIREBASE_PROJECT_ID=...
+VITE_FIREBASE_STORAGE_BUCKET=...
+VITE_FIREBASE_MESSAGING_SENDER_ID=...
+VITE_FIREBASE_APP_ID=...
+ELEVENLABS_API_KEY=...
+ELEVENLABS_AGENT_ID=...
+TWILIO_ACCOUNT_SID=...
+TWILIO_AUTH_TOKEN=...
+TWILIO_PHONE_NUMBER=...
+```
+
+---
+
 ## Coordination with Team
 
 ### From Eddy (Backend Logic)
 - Firestore schema (reference `CLAUDE-BE.md`)
 - Activity type definitions
 
-### From PM (Agent Runtime)
-- How they want to trigger calls (you provide function, or they write to Firestore?)
-- When to expect activity writes
+### From Spencer (PM / Agent Runtime)
+- Writes `pending_action` to Firestore — you watch and execute
+- Reads `pending_outcome` from Firestore — you write after call/SMS completes
 
 ### You Provide to Both
 - Firebase credentials (service account JSON + web config)
-- Webhook URLs for Bland.ai and Twilio
+- Webhook URLs for ElevenLabs and Twilio (once deployed on Vercel)
 
 ---
 
 ## Handoff Checklist
 
 - [ ] Create Firebase project
-- [ ] Share service account JSON with Eddy and PM
+- [ ] Share service account JSON with Eddy and Spencer
 - [ ] Share web config / env vars
 - [ ] Set up Firestore with initial demo data
 - [ ] Build React components
-- [ ] Integrate Bland.ai
-- [ ] Integrate Twilio
+- [ ] Integrate ElevenLabs Conversational AI
+- [ ] Integrate Twilio SMS
 - [ ] Deploy to Vercel
+- [ ] Share webhook URLs with team
 - [ ] Test full demo flow with team

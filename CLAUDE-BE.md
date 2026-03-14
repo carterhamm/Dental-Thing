@@ -4,7 +4,7 @@
 
 Dental rescheduling agent that autonomously fills cancelled appointment slots. When a patient cancels, the AI agent scores candidates, contacts them via voice/SMS, and keeps going until the slot is filled.
 
-**Your role:** Own the scoring logic, decision rules, state transitions, and Firestore schema design. You are the "brain" — PM's Claude SDK agent will call your functions to decide what to do.
+**Your role:** Own the scoring logic, decision rules, state transitions, and Firestore schema design. You are the "brain" — PM's Claude Agent SDK orchestrator will call your functions to decide what to do.
 
 ---
 
@@ -44,10 +44,42 @@ You own this schema. PM and UI reference it. If it changes, it changes here firs
       "days_overdue": 15
     }
   ],
+  "pending_action": null,
+  "pending_outcome": null,
   "recovered": 0,
   "agent_status": "idle"
 }
 ```
+
+### `pending_action` (PM writes, UI/Voice reads + executes)
+
+```json
+{
+  "id": "action_abc123",
+  "type": "voice",
+  "phone": "+1-801-555-0101",
+  "patient_name": "Sarah Kim",
+  "message": "Hi Sarah, this is Bright Smile Dental...",
+  "status": "pending",
+  "created_at": "2026-03-14T10:32:00Z"
+}
+```
+
+- `type`: `"voice"` (ElevenLabs + Twilio) or `"sms"` (Twilio)
+- `status`: `"pending"` → `"sent"` → `"in_progress"` → `"completed"`
+
+### `pending_outcome` (UI/Voice writes, PM reads)
+
+```json
+{
+  "type": "voice",
+  "result": "no_answer",
+  "details": "Call rang for 30 seconds, no pickup",
+  "completed_at": "2026-03-14T10:33:00Z"
+}
+```
+
+- `result`: `"confirmed"` | `"declined"` | `"no_answer"`
 
 ### `slot.status` Values
 
@@ -74,7 +106,7 @@ You own this schema. PM and UI reference it. If it changes, it changes here firs
 |------|-------------|------------|
 | `"event"` | System events (cancellation received, agent started) | Grey dot |
 | `"thinking"` | Agent reasoning (scoring candidates, deciding next step) | Purple dot, italic |
-| `"tool_call"` | Agent taking action (calling, texting) | Blue dot |
+| `"tool_call"` | Agent taking action (requesting call/SMS) | Blue dot |
 | `"call_outcome"` | Result of a voice call (answered, no answer, declined) | Orange dot |
 | `"sms_sent"` | SMS was sent | Teal dot |
 | `"success"` | Slot filled, revenue logged | Green dot, bold |
@@ -95,7 +127,7 @@ You own this schema. PM and UI reference it. If it changes, it changes here firs
 
 ## Your Module: `brain.py`
 
-PM's Claude SDK agent will import and call these functions. Define these interfaces clearly.
+PM's Claude Agent SDK orchestrator will import and call these functions. Define these interfaces clearly.
 
 ### Function Signatures
 
@@ -211,7 +243,7 @@ exhausted → open (when demo reset)
 
 ## Firestore Write Patterns
 
-Use `firebase-admin` SDK. UI person will set up the Firebase project and share credentials.
+Use `firebase-admin` SDK. UI/Voice person will set up the Firebase project and share credentials.
 
 ```python
 import firebase_admin
@@ -306,13 +338,14 @@ RECALL_LIST = [
 
 ## Handoff to PM
 
-PM's Claude SDK agent will:
+PM's Claude Agent SDK orchestrator will:
 1. Import your `brain.py` module
 2. Call `score_candidates()` when a cancellation is detected
 3. Call `get_next_action()` to decide what to do
-4. Execute the action (via UI person's Bland.ai/Twilio code or directly)
-5. Call `update_candidate_status()` when call/SMS outcome is known
-6. Repeat until `get_next_action()` returns `"done"` or `"give_up"`
+4. Write outreach intent to Firestore (`pending_action`) — UI/Voice executes it
+5. Read outcome from Firestore (`pending_outcome`) when UI/Voice writes it
+6. Call `update_candidate_status()` with the result
+7. Repeat until `get_next_action()` returns `"done"` or `"give_up"`
 
 Your job: Make sure these functions are solid and tested. PM depends on them.
 
@@ -320,7 +353,7 @@ Your job: Make sure these functions are solid and tested. PM depends on them.
 
 ## Setup Checklist
 
-- [ ] Get Firebase service account JSON from UI person
+- [ ] Get Firebase service account JSON from UI/Voice person
 - [ ] Install: `pip install firebase-admin`
 - [ ] Create `brain.py` with all functions above
 - [ ] Test scoring logic with mock recall list
