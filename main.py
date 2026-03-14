@@ -106,10 +106,12 @@ class SMSReply(BaseModel):
 
 # --- Endpoints ---
 
+_last_error: str = ""
+
 @app.get("/")
 async def root():
     """Health check."""
-    return {"status": "ok", "agent_running": _is_running}
+    return {"status": "ok", "agent_running": _is_running, "last_error": _last_error}
 
 
 @app.post("/cancellation")
@@ -186,17 +188,22 @@ async def reset_demo():
 
 async def run_orchestrator():
     """Start the Claude orchestrator in background."""
-    global _is_running
+    global _is_running, _last_error
     try:
         orch = get_orchestrator()
         # run_step is sync (calls Anthropic API) — run in thread pool
         await asyncio.to_thread(orch.start, DEMO_SLOT)
     except Exception as e:
-        print(f"Orchestrator error: {e}")
-        from agent.firestore import update_agent_status, add_activity, update_slot_status
-        update_agent_status("failed")
-        update_slot_status("exhausted")
-        add_activity("error", f"Agent error: {str(e)[:100]}")
+        import traceback
+        _last_error = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"Orchestrator error: {_last_error}")
+        try:
+            from agent.firestore import update_agent_status, add_activity, update_slot_status
+            update_agent_status("failed")
+            update_slot_status("exhausted")
+            add_activity("error", f"Agent error: {str(e)[:100]}")
+        except Exception as fe:
+            print(f"Firestore error while reporting failure: {fe}")
         _is_running = False
 
 
