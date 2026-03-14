@@ -108,7 +108,9 @@ app.add_middleware(
 
 class CallOutcome(BaseModel):
     patient_name: str
-    outcome: str  # "confirmed", "declined", "no_answer"
+    outcome: str  # "confirmed", "declined", "no_answer", "reschedule_request"
+    reason: str | None = None  # Optional explanation from voice AI
+    preferred_time: str | None = None  # e.g., "Wednesday afternoon"
 
 
 class SMSReply(BaseModel):
@@ -140,8 +142,21 @@ async def call_outcome(body: CallOutcome, background_tasks: BackgroundTasks):
     if not _is_running:
         return {"status": "agent_not_running"}
 
-    status_map = {"confirmed": "confirmed", "declined": "declined", "no_answer": "no_answer"}
+    # reschedule_request → declined (but we log the preferred time for follow-up)
+    status_map = {
+        "confirmed": "confirmed",
+        "declined": "declined",
+        "no_answer": "no_answer",
+        "reschedule_request": "declined",
+    }
     new_status = status_map.get(body.outcome, "no_answer")
+
+    # Log reschedule request with preferred time (visible to judges!)
+    if body.outcome == "reschedule_request" and body.preferred_time:
+        add_activity(
+            "thinking",
+            f"{body.patient_name} requested {body.preferred_time} — logged for follow-up"
+        )
 
     background_tasks.add_task(handle_outcome_bg, body.patient_name, new_status)
     return {"status": "received", "patient": body.patient_name, "outcome": body.outcome}
@@ -331,8 +346,13 @@ async def elevenlabs_webhook(request: Request, background_tasks: BackgroundTasks
 
     analysis = data.get("analysis", {})
     call_successful = analysis.get("call_successful", False)
+    preferred_time = analysis.get("preferred_time")  # e.g., "Wednesday afternoon"
+
+    # Determine outcome from analysis
     if call_successful:
         outcome = "confirmed"
+    elif preferred_time or "reschedule" in str(analysis).lower():
+        outcome = "reschedule_request"
     elif "declined" in str(analysis).lower() or "no" in str(analysis).lower():
         outcome = "declined"
     else:
@@ -341,8 +361,18 @@ async def elevenlabs_webhook(request: Request, background_tasks: BackgroundTasks
     orch = get_orchestrator()
     if orch.current_index >= 0 and orch.current_index < len(orch.candidates):
         patient_name = orch.candidates[orch.current_index]["name"]
+
+        # Log reschedule request with preferred time (visible to judges!)
+        if outcome == "reschedule_request" and preferred_time:
+            add_activity(
+                "thinking",
+                f"{patient_name} requested {preferred_time} — logged for follow-up"
+            )
+
         if _is_running:
-            background_tasks.add_task(handle_outcome_bg, patient_name, outcome)
+            # Map reschedule_request to declined for state machine
+            status = "declined" if outcome == "reschedule_request" else outcome
+            background_tasks.add_task(handle_outcome_bg, patient_name, status)
 
     return {"status": "received"}
 

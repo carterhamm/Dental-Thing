@@ -172,23 +172,25 @@ class TestGetNextAction:
         assert idx == 0
 
     def test_wait_while_calling(self):
-        """Should wait while call is in progress (before timeout)."""
+        """Should wait while call is in progress (webhook drives state)."""
         candidates = score_candidates(RECALL_LIST, DEMO_SLOT)
         candidates = update_candidate_status(candidates, 0, "calling")
 
+        # Always wait — ElevenLabs webhook will fire /call-outcome when call ends
         action, idx = get_next_action(candidates, current_index=0, elapsed_time=5.0)
 
         assert action == "wait"
         assert idx == 0
 
-    def test_sms_fallback_on_call_timeout(self):
-        """Should fall back to SMS when call times out."""
+    def test_always_wait_while_calling(self):
+        """Should wait indefinitely while calling (webhook drives state, not timer)."""
         candidates = score_candidates(RECALL_LIST, DEMO_SLOT)
         candidates = update_candidate_status(candidates, 0, "calling")
 
-        action, idx = get_next_action(candidates, current_index=0, elapsed_time=35.0)
+        # Even after a long time, we still wait — webhook is the only way to transition
+        action, idx = get_next_action(candidates, current_index=0, elapsed_time=999.0)
 
-        assert action == "sms"
+        assert action == "wait"
         assert idx == 0
 
     def test_next_candidate_on_decline(self):

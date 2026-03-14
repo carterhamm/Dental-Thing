@@ -19,9 +19,9 @@ CandidateStatus = Literal[
 ]
 
 # Timeout configurations (in seconds)
-# For demo, these can be shortened to keep things snappy
-CALL_TIMEOUT = 30.0  # How long to wait for call outcome
-SMS_TIMEOUT = 60.0   # How long to wait for SMS reply
+# Note: CALL_TIMEOUT removed — ElevenLabs webhook drives call state changes,
+# so we don't need a timer racing against it. SMS timeout kept for fallback.
+SMS_TIMEOUT = 60.0  # How long to wait for SMS reply before moving on
 
 
 def score_candidate(patient: dict, slot: dict) -> int:
@@ -164,10 +164,13 @@ def get_next_action(
     This is the core decision function. PM's agent loop calls this repeatedly
     to drive the flow.
 
+    Note: Call outcomes are driven by webhooks (ElevenLabs fires /call-outcome),
+    so elapsed_time is only used for SMS timeout fallback.
+
     Args:
         candidates: Current ranked candidate list with statuses
         current_index: Index of candidate we're currently working on (-1 if none)
-        elapsed_time: Seconds elapsed since current action started (for timeout checks)
+        elapsed_time: Seconds elapsed since current action started (SMS timeout only)
 
     Returns:
         (action, candidate_index) tuple:
@@ -203,13 +206,9 @@ def get_next_action(
         return ("call", current_index)
 
     elif status == "calling":
-        # Currently calling → check timeout
-        if elapsed_time >= CALL_TIMEOUT:
-            # Timeout → will need to mark as no_answer and try SMS
-            return ("sms", current_index)
-        else:
-            # Still waiting for call outcome
-            return ("wait", current_index)
+        # Currently calling — webhook will fire when call ends
+        # (no timeout needed; ElevenLabs/Twilio drives state via /call-outcome)
+        return ("wait", current_index)
 
     elif status == "no_answer":
         # Call failed → try SMS
