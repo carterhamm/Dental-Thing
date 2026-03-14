@@ -1,8 +1,11 @@
 """
 Firestore write helpers for the dental rescheduling agent.
 
-These are thin wrappers around firebase-admin writes.
-UI person will set up the Firebase project and share credentials.
+Adapted to Carter's frontend schema:
+- slots/active          → slot info
+- agent/status          → agent status doc
+- patients/p0, p1, ...  → individual patient docs
+- activity_log/         → activity collection with serverTimestamp
 
 Usage:
     from agent.firestore import init_firestore, add_activity, update_agent_status
@@ -16,11 +19,9 @@ Usage:
 """
 
 import uuid
-from datetime import datetime, timezone
 
 # Firebase admin SDK - will be initialized at runtime
 _db = None
-_session_ref = None
 
 
 def init_firestore(service_account_path: str | None = None):
@@ -31,7 +32,7 @@ def init_firestore(service_account_path: str | None = None):
         service_account_path: Path to service account JSON file.
             If None, uses GOOGLE_APPLICATION_CREDENTIALS env var.
     """
-    global _db, _session_ref
+    global _db
 
     import firebase_admin
     from firebase_admin import credentials, firestore
@@ -46,19 +47,18 @@ def init_firestore(service_account_path: str | None = None):
             firebase_admin.initialize_app()
 
     _db = firestore.client()
-    _session_ref = _db.collection("sessions").document("current")
 
 
-def _get_session_ref():
-    """Get the session document reference, initializing if needed."""
-    if _session_ref is None:
+def _get_db():
+    """Get the Firestore client, raising if not initialized."""
+    if _db is None:
         raise RuntimeError("Firestore not initialized. Call init_firestore() first.")
-    return _session_ref
+    return _db
 
 
 def add_activity(activity_type: str, text: str) -> None:
     """
-    Add an activity log entry.
+    Add an activity log entry to activity_log collection.
 
     UI will display this in the activity feed in real-time.
 
@@ -69,69 +69,124 @@ def add_activity(activity_type: str, text: str) -> None:
     """
     from firebase_admin import firestore
 
-    session_ref = _get_session_ref()
-    session_ref.update({
-        "activity": firestore.ArrayUnion([{
-            "id": f"act_{uuid.uuid4().hex[:8]}",
-            "type": activity_type,
-            "text": text,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }])
+    db = _get_db()
+    db.collection("activity_log").add({
+        "id": f"act_{uuid.uuid4().hex[:8]}",
+        "type": activity_type,
+        "text": text,
+        "timestamp": firestore.SERVER_TIMESTAMP,
     })
 
 
 def update_agent_status(status: str) -> None:
     """
-    Update the agent_status field.
+    Update the agent status document at agent/status.
 
     UI shows this in the top bar (idle/running/complete/failed).
 
     Args:
         status: One of "idle", "running", "complete", "failed"
     """
-    session_ref = _get_session_ref()
-    session_ref.update({"agent_status": status})
+    db = _get_db()
+    db.collection("agent").document("status").set({
+        "status": status,
+    }, merge=True)
 
 
 def update_slot_status(status: str, filled_by: str | None = None) -> None:
     """
-    Update the slot status and optionally who filled it.
+    Update the slot document at slots/active.
 
     Args:
         status: One of "open", "cancelled", "filling", "filled", "exhausted"
         filled_by: Name of patient who filled the slot (if status is "filled")
     """
-    session_ref = _get_session_ref()
-    updates = {"slot.status": status}
+    db = _get_db()
+    updates = {"status": status}
     if filled_by is not None:
-        updates["slot.filled_by"] = filled_by
-    session_ref.update(updates)
+        updates["filled_by"] = filled_by
+    db.collection("slots").document("active").set(updates, merge=True)
 
 
 def update_candidates(candidates: list[dict]) -> None:
     """
-    Replace the candidates array.
+    Write candidates to individual patient documents: patients/p0, p1, etc.
 
     UI shows this in the candidate queue panel.
 
     Args:
         candidates: Full list of candidates with current statuses
     """
-    session_ref = _get_session_ref()
-    session_ref.update({"candidates": candidates})
+    db = _get_db()
+    patients_ref = db.collection("patients")
+
+    # Write each candidate as patients/p0, patients/p1, etc.
+    for i, candidate in enumerate(candidates):
+        patients_ref.document(f"p{i}").set(candidate)
 
 
 def update_recovered(amount: int) -> None:
     """
-    Update the recovered revenue amount.
+    Update the recovered revenue on the agent/status document.
 
     UI shows this in the revenue counter.
 
     Args:
         amount: Dollar amount recovered
     """
-    session_ref = _get_session_ref()
-    session_ref.update({"recovered": amount})
+    db = _get_db()
+    db.collection("agent").document("status").set({
+        "recovered": amount,
+    }, merge=True)
+
+
+def initialize_session(slot: dict, recall_list: list[dict] | None = None) -> list[dict]:
+    """
+    Initialize a new session: score candidates and push everything to Firestore.
+
+    This is the main entry point when a cancellation happens.
+    Call this once, then use update_candidates() for status changes.
+
+    Args:
+        slot: The cancelled slot to fill (dict with treatment, time, date, value)
+        recall_list: Optional patient list. If None, uses mock data.
+
+    Returns:
+        Scored and ranked candidates list (also written to Firestore)
+    """
+    from agent.brain import score_candidates
+    from agent.mock_data import RECALL_LIST
+
+    # Use mock data if no recall list provided
+    if recall_list is None:
+        recall_list = RECALL_LIST
+
+    # Score and rank candidates using brain logic
+    candidates = score_candidates(recall_list, slot)
+
+    # Write everything to Firestore
+    db = _get_db()
+
+    # 1. Write the slot
+    db.collection("slots").document("active").set({
+        **slot,
+        "status": "filling",
+    })
+
+    # 2. Set agent status to running
+    db.collection("agent").document("status").set({
+        "status": "running",
+        "recovered": 0,
+    })
+
+    # 3. Write all candidates
+    update_candidates(candidates)
+
+    # 4. Log the activity
+    add_activity("event", f"Scoring {len(candidates)} candidates for {slot.get('treatment', 'appointment')}")
+    add_activity("thinking", f"Top candidate: {candidates[0]['name']} (score: {candidates[0]['score']})")
+
+    return candidates
 
 
 def reset_session() -> None:
@@ -139,20 +194,33 @@ def reset_session() -> None:
     Reset the session to initial demo state.
 
     Called by "Reset Demo" button in UI.
+    Clears all collections and resets to initial state.
     """
-    session_ref = _get_session_ref()
-    session_ref.set({
-        "slot": {
-            "id": "slot_001",
-            "time": "2:00 PM",
-            "date": "Today",
-            "treatment": "cleaning",
-            "value": 200,
-            "status": "open",
-            "filled_by": None,
-        },
-        "activity": [],
-        "candidates": [],
-        "recovered": 0,
-        "agent_status": "idle",
+    db = _get_db()
+
+    # Reset slot
+    db.collection("slots").document("active").set({
+        "id": "slot_001",
+        "time": "2:00 PM",
+        "date": "Today",
+        "treatment": "cleaning",
+        "value": 200,
+        "status": "open",
+        "filled_by": None,
     })
+
+    # Reset agent status
+    db.collection("agent").document("status").set({
+        "status": "idle",
+        "recovered": 0,
+    })
+
+    # Clear patients collection (delete all p0, p1, etc.)
+    patients_ref = db.collection("patients")
+    for doc in patients_ref.stream():
+        doc.reference.delete()
+
+    # Clear activity log
+    activity_ref = db.collection("activity_log")
+    for doc in activity_ref.stream():
+        doc.reference.delete()

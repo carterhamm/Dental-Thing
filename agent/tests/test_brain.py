@@ -25,32 +25,79 @@ class TestScoring:
     """Tests for candidate scoring logic."""
 
     def test_score_candidate_treatment_match_bonus(self):
-        """Treatment match should give +150 bonus."""
+        """Treatment match should give +100 bonus."""
         patient = {
             "treatment_needed": "cleaning",
-            "days_overdue": 10,
+            "cycles_overdue": 1,
             "reliability_score": 0.5,
+            "preferred_time_of_day": "afternoon",
+            "pending_treatment": False,
         }
-        slot = {"treatment": "cleaning"}
+        slot = {"treatment": "cleaning", "time": "2:00 PM"}
 
         score = score_candidate(patient, slot)
 
-        # min(10,60)*2 + 150 + int(0.5*30) = 20 + 150 + 15 = 185
-        assert score == 185
+        # cycles: 1*25=25, treatment: +100, reliability: 0.5*20=10, time match: +10, pending: 0
+        # Total: 25 + 100 + 10 + 10 = 145
+        assert score == 145
 
     def test_score_candidate_treatment_mismatch_penalty(self):
-        """Treatment mismatch should give -200 penalty."""
+        """Treatment mismatch should give -50 penalty."""
         patient = {
             "treatment_needed": "filling",
-            "days_overdue": 10,
+            "cycles_overdue": 1,
             "reliability_score": 0.5,
+            "preferred_time_of_day": "morning",
+            "pending_treatment": False,
         }
-        slot = {"treatment": "cleaning"}
+        slot = {"treatment": "cleaning", "time": "2:00 PM"}
 
         score = score_candidate(patient, slot)
 
-        # min(10,60)*2 - 200 + int(0.5*30) = 20 - 200 + 15 = -165
-        assert score == -165
+        # cycles: 1*25=25, treatment: -50, reliability: 0.5*20=10, time match: 0, pending: 0
+        # Total: 25 - 50 + 10 = -15
+        assert score == -15
+
+    def test_score_candidate_pending_treatment_bonus(self):
+        """Pending treatment should give +25 bonus."""
+        patient = {
+            "treatment_needed": "cleaning",
+            "cycles_overdue": 1,
+            "reliability_score": 0.5,
+            "preferred_time_of_day": "afternoon",
+            "pending_treatment": True,
+        }
+        slot = {"treatment": "cleaning", "time": "2:00 PM"}
+
+        score = score_candidate(patient, slot)
+
+        # cycles: 25, treatment: +100, reliability: 10, time match: +10, pending: +25
+        # Total: 25 + 100 + 10 + 10 + 25 = 170
+        assert score == 170
+
+    def test_score_candidate_multiple_cycles_overdue(self):
+        """Multiple cycles overdue should increase urgency."""
+        patient_1_cycle = {
+            "treatment_needed": "cleaning",
+            "cycles_overdue": 1,
+            "reliability_score": 0.5,
+            "preferred_time_of_day": "afternoon",
+            "pending_treatment": False,
+        }
+        patient_2_cycles = {
+            "treatment_needed": "cleaning",
+            "cycles_overdue": 2,
+            "reliability_score": 0.5,
+            "preferred_time_of_day": "afternoon",
+            "pending_treatment": False,
+        }
+        slot = {"treatment": "cleaning", "time": "2:00 PM"}
+
+        score_1 = score_candidate(patient_1_cycle, slot)
+        score_2 = score_candidate(patient_2_cycles, slot)
+
+        # 2 cycles should be 25 points higher than 1 cycle
+        assert score_2 == score_1 + 25
 
     def test_score_candidates_ranks_correctly(self):
         """Candidates should be ranked by score descending."""
@@ -69,7 +116,7 @@ class TestScoring:
         candidates = score_candidates(RECALL_LIST, DEMO_SLOT)
 
         # Maria Garcia needs "filling", not "cleaning"
-        # She should be ranked lower despite high days_overdue
+        # Even with pending_treatment, she should rank lower than cleaning patients
         maria = next(c for c in candidates if c["name"] == "Maria Garcia")
         sarah = next(c for c in candidates if c["name"] == "Sarah Kim")
 
@@ -81,6 +128,15 @@ class TestScoring:
 
         for c in candidates:
             assert c["status"] == "waiting"
+
+    def test_score_candidates_includes_new_fields(self):
+        """Candidates should include all the new fields."""
+        candidates = score_candidates(RECALL_LIST, DEMO_SLOT)
+
+        for c in candidates:
+            assert "cycles_overdue" in c
+            assert "preferred_time_of_day" in c
+            assert "pending_treatment" in c
 
 
 class TestGetNextAction:
