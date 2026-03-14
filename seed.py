@@ -20,4 +20,4 @@ service_account_path = os.environ.get(
 )
 init_firestore(service_account_path)
 reset_session()
-print("Firestore seeded: sessions/current → clean demo state")
+print("Firestore seeded: slots/active + agent/status + patients + activity_log cleared")

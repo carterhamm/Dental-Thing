@@ -1,13 +1,13 @@
 """
 Claude Agent orchestrator — Spencer's PM runtime.
 
-This wraps Eddy's deterministic brain functions with Claude's reasoning.
-Claude drives the loop via tool use, calling brain functions for decisions
-and logging its thinking to the activity feed for the judges to see.
+Wraps Eddy's brain functions with Claude's reasoning via tool use.
+Writes to Carter's Firestore schema so the dashboard updates in real-time.
 
-The orchestrator is called by main.py when a cancellation is triggered.
-Outreach outcomes arrive via FastAPI webhook endpoints in main.py,
-which update candidate statuses directly — no Firestore polling needed.
+The orchestrator is event-driven:
+  1. main.py calls start() on cancellation → Claude ranks + initiates first outreach
+  2. Webhook delivers outcome → main.py calls handle_outcome() → Claude decides next step
+  3. Repeat until booked or exhausted
 """
 
 import anthropic
@@ -16,35 +16,28 @@ from agent.brain import (
     score_candidates,
     get_next_action,
     update_candidate_status,
-    calculate_recovered_revenue,
 )
 from agent.firestore import (
     add_activity,
     update_agent_status,
-    update_slot_status,
-    update_candidates,
-    update_recovered,
+    update_agent_phase,
+    update_slot,
+    update_patient,
+    get_queued_patients,
+    increment_attempt,
 )
 from agent.mock_data import RECALL_LIST
 
 
-# ---------------------------------------------------------------------------
-# Tool definitions for Claude
-# ---------------------------------------------------------------------------
-
 TOOLS = [
     {
         "name": "rank_candidates",
-        "description": (
-            "Score and rank waitlist candidates for the open slot. "
-            "Call this first when a cancellation is detected."
-        ),
+        "description": "Score and rank waitlist candidates for the open slot. Call this first.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "slot": {
                     "type": "object",
-                    "description": "The cancelled slot to fill",
                     "properties": {
                         "treatment": {"type": "string"},
                         "time": {"type": "string"},
@@ -59,10 +52,7 @@ TOOLS = [
     },
     {
         "name": "decide_next_action",
-        "description": (
-            "Given current candidates and index, decide next action: "
-            "call, sms, next_candidate, give_up, or done."
-        ),
+        "description": "Given current candidates and index, decide: call, sms, next_candidate, give_up, or done.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -76,65 +66,44 @@ TOOLS = [
     },
     {
         "name": "initiate_voice_call",
-        "description": (
-            "Initiate a voice call to a candidate. Updates their status to 'calling' "
-            "and signals the comms layer. The outcome will arrive asynchronously via webhook."
-        ),
+        "description": "Call a candidate. Outcome arrives via webhook — stop after this.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "candidate_index": {
-                    "type": "integer",
-                    "description": "Index of the candidate to call",
-                },
+                "candidate_index": {"type": "integer"},
             },
             "required": ["candidate_index"],
         },
     },
     {
         "name": "initiate_sms",
-        "description": (
-            "Send an SMS to a candidate. Updates their status to 'texting' "
-            "and signals the comms layer. The reply will arrive asynchronously via webhook."
-        ),
+        "description": "Text a candidate. Reply arrives via webhook — stop after this.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "candidate_index": {
-                    "type": "integer",
-                    "description": "Index of the candidate to text",
-                },
+                "candidate_index": {"type": "integer"},
             },
             "required": ["candidate_index"],
         },
     },
     {
         "name": "book_appointment",
-        "description": "Finalize the booking when a candidate is confirmed.",
+        "description": "Finalize the booking when a candidate confirmed.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "candidate_index": {
-                    "type": "integer",
-                    "description": "Index of the confirmed candidate",
-                },
+                "candidate_index": {"type": "integer"},
             },
             "required": ["candidate_index"],
         },
     },
     {
         "name": "log_thinking",
-        "description": (
-            "Log your reasoning to the activity feed. Judges see this in real-time. "
-            "Be specific: mention scores, names, and why you chose this action."
-        ),
+        "description": "Log reasoning to the activity feed. Judges see this. Be specific with scores and names.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "text": {
-                    "type": "string",
-                    "description": "Your reasoning (1-2 sentences)",
-                },
+                "text": {"type": "string"},
             },
             "required": ["text"],
         },
@@ -143,57 +112,78 @@ TOOLS = [
 
 SYSTEM_PROMPT = """\
 You are a dental scheduling AI agent for Bright Smile Dental. A patient just \
-cancelled their appointment and you need to fill the slot by contacting \
-candidates from the recall list.
+cancelled and you need to fill the slot by contacting candidates.
 
-Your workflow:
-1. rank_candidates to score the waitlist for this slot.
-2. log_thinking to explain rankings to the judges.
-3. decide_next_action to get the brain's recommendation.
-4. Based on the action:
+Workflow:
+1. rank_candidates to score the waitlist.
+2. log_thinking to explain your rankings.
+3. decide_next_action to get the recommendation.
+4. Based on action:
    - "call" → log_thinking why, then initiate_voice_call
-   - "sms" → log_thinking the fallback reason, then initiate_sms
-   - "next_candidate" → log_thinking why you're moving on, then decide_next_action with new index
-   - "done" → log_thinking to celebrate, then book_appointment
-   - "give_up" → log_thinking summarizing what happened, then stop
-5. After initiating outreach, STOP and return. The webhook will deliver the outcome \
-and the agent loop will re-invoke you with updated state.
+   - "sms" → log_thinking the fallback, then initiate_sms
+   - "next_candidate" → log_thinking why moving on, then decide_next_action with new index
+   - "done" → celebrate briefly, then book_appointment
+   - "give_up" → summarize what happened, then stop
+5. After initiating a call or SMS, STOP. The outcome arrives via webhook.
 
 Rules:
-- ALWAYS log_thinking before taking action — the feed IS the demo.
-- Be specific: "Sarah Kim scores 82 — 15 days overdue, exact treatment match, 90% reliable."
-- Keep reasoning to 1-2 sentences. Sound like a smart assistant, not a robot.
-- After initiating a call or SMS, you MUST stop. Do not loop — the outcome arrives via webhook.
+- ALWAYS log_thinking before acting. Be specific: names, scores, reasons.
+- 1-2 sentences per log. Sound like a smart assistant.
+- After initiate_voice_call or initiate_sms, you MUST stop and return.
 """
 
 
 class Orchestrator:
-    """Manages the Claude agent loop and candidate state."""
+    """Claude agent that drives the rescheduling flow."""
 
     def __init__(self, api_key: str):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.candidates: list[dict] = []
         self.slot: dict = {}
         self.current_index: int = -1
-        # Callback for comms layer — main.py sets this
+        self.patient_ids: list[str] = []  # Firestore doc IDs (p0, p1, ...)
+        # Comms callbacks — main.py wires these to real Twilio/ElevenLabs
         self.on_voice_call: callable = None
         self.on_sms: callable = None
 
+    def _update_patient_status(self, idx: int, status: str) -> None:
+        """Update both in-memory candidates and Firestore patient doc."""
+        self.candidates = update_candidate_status(self.candidates, idx, status)
+        if idx < len(self.patient_ids):
+            # Map brain status to Carter's frontend status
+            fe_status_map = {
+                "calling": "calling",
+                "no_answer": "no_answer",
+                "texting": "sms_sent",
+                "no_reply": "skipped",
+                "declined": "skipped",
+                "confirmed": "confirmed",
+                "waiting": "queued",
+            }
+            fe_status = fe_status_map.get(status, status)
+            update_patient(self.patient_ids[idx], fe_status)
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
-        """Execute a tool call and return the result string."""
+        """Execute a tool call from Claude."""
 
         if tool_name == "rank_candidates":
             self.slot = tool_input["slot"]
             self.candidates = score_candidates(RECALL_LIST, self.slot)
-            update_candidates(self.candidates)
+
+            # Map candidates to Firestore patient doc IDs
+            patients = get_queued_patients()
+            self.patient_ids = []
+            for c in self.candidates:
+                matched = next((p for p in patients if p["name"] == c["name"]), None)
+                self.patient_ids.append(matched["id"] if matched else f"p{len(self.patient_ids)}")
+
             add_activity(
-                "event",
-                f"Ranked {len(self.candidates)} candidates for "
-                f"{self.slot['time']} {self.slot['treatment']}",
+                "🔍",
+                f"Ranked {len(self.candidates)} candidates for {self.slot['time']} {self.slot.get('treatment', 'cleaning')}",
+                "system",
             )
             summary = ", ".join(
-                f"#{c['rank']} {c['name']} (score: {c['score']})"
-                for c in self.candidates
+                f"#{c['rank']} {c['name']} (score: {c['score']})" for c in self.candidates
             )
             return f"Ranked {len(self.candidates)} candidates: {summary}"
 
@@ -209,58 +199,55 @@ class Orchestrator:
         elif tool_name == "initiate_voice_call":
             idx = tool_input["candidate_index"]
             candidate = self.candidates[idx]
-            self.candidates = update_candidate_status(self.candidates, idx, "calling")
+            self._update_patient_status(idx, "calling")
             self.current_index = idx
-            update_candidates(self.candidates)
-            add_activity("tool_call", f"Calling {candidate['name']} ({candidate['phone']})...")
-            # Trigger the actual call via comms layer
+            increment_attempt()
+            update_agent_phase("calling", candidate["name"])
+            add_activity("📞", f"Calling {candidate['name']}...", "call")
             if self.on_voice_call:
                 self.on_voice_call(candidate)
-            return f"Voice call initiated to {candidate['name']}. Waiting for outcome via webhook."
+            return f"Voice call initiated to {candidate['name']}. Waiting for outcome."
 
         elif tool_name == "initiate_sms":
             idx = tool_input["candidate_index"]
             candidate = self.candidates[idx]
-            self.candidates = update_candidate_status(self.candidates, idx, "texting")
+            self._update_patient_status(idx, "texting")
             self.current_index = idx
-            update_candidates(self.candidates)
-            add_activity("sms_sent", f"SMS sent to {candidate['name']} ({candidate['phone']})")
-            # Trigger the actual SMS via comms layer
+            update_agent_phase("sms_sent", candidate["name"])
+            add_activity(
+                "💬",
+                f"SMS sent to {candidate['name']}: \"Hi {candidate['name']}, we have an opening at "
+                f"{self.slot.get('time', '2:30 PM')} for a cleaning. Would you like to book it?\"",
+                "sms",
+            )
             if self.on_sms:
                 self.on_sms(candidate, self.slot)
-            return f"SMS sent to {candidate['name']}. Waiting for reply via webhook."
+            return f"SMS sent to {candidate['name']}. Waiting for reply."
 
         elif tool_name == "book_appointment":
             idx = tool_input["candidate_index"]
             candidate = self.candidates[idx]
-            self.candidates = update_candidate_status(self.candidates, idx, "confirmed")
-            update_candidates(self.candidates)
-            revenue = calculate_recovered_revenue(self.slot)
-            update_slot_status("filled", filled_by=candidate["name"])
-            update_recovered(revenue)
-            update_agent_status("complete")
-            add_activity("success", f"Slot filled by {candidate['name']}! Recovered ${revenue}.")
-            return f"Booked! {candidate['name']} confirmed. ${revenue} recovered."
+            self._update_patient_status(idx, "confirmed")
+            update_agent_phase("booking", candidate["name"])
+            update_slot("booking")
+            add_activity("📋", "Confirming appointment...", "system")
+            # Small delay would be nice here but we're sync — main.py handles the finalize
+            update_agent_phase("filled", candidate["name"])
+            update_slot("filled", booked_by=candidate["name"])
+            add_activity("✅", f"Slot filled! {candidate['name']} booked for {self.slot.get('time', '2:30 PM')}", "success")
+            return f"Booked! {candidate['name']} confirmed."
 
         elif tool_name == "log_thinking":
-            add_activity("thinking", tool_input["text"])
+            add_activity("🧠", tool_input["text"], "system")
             return "Logged."
 
         return f"Unknown tool: {tool_name}"
 
     def run_step(self, user_message: str) -> str:
-        """Run one step of the Claude agent loop.
-
-        Each step: Claude receives context → makes tool calls → returns.
-        Called by main.py on cancellation trigger AND after each webhook outcome.
-
-        Returns the agent's final text response for this step (for logging).
-        """
+        """Run one step of Claude reasoning. Returns after outreach is initiated or decision is final."""
         messages = [{"role": "user", "content": user_message}]
 
-        # Let Claude make multiple tool calls in sequence within one step
-        max_turns = 15
-        for _ in range(max_turns):
+        for _ in range(15):
             response = self.client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=1024,
@@ -272,11 +259,9 @@ class Orchestrator:
             messages.append({"role": "assistant", "content": response.content})
 
             if response.stop_reason == "end_turn":
-                # Extract final text
                 text_parts = [b.text for b in response.content if hasattr(b, "text")]
                 return " ".join(text_parts) if text_parts else ""
 
-            # Process tool calls
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
@@ -295,58 +280,54 @@ class Orchestrator:
         return ""
 
     def start(self, slot: dict) -> str:
-        """Start the agent for a cancelled slot. Returns after first outreach is initiated."""
+        """Start the agent for a cancelled slot."""
         self.slot = slot
         self.candidates = []
         self.current_index = -1
 
-        update_agent_status("running")
-        update_slot_status("filling")
-        add_activity("event", f"Cancellation detected — {slot['time']} {slot['treatment']} (${slot['value']})")
+        total = len(get_queued_patients())
+        update_agent_status("calling", attempt=0, total_patients=total)
+        add_activity("⚠️", f"Cancellation received — starting outreach for {slot.get('time', '2:30 PM')} slot", "warning")
 
         return self.run_step(
-            f"A patient cancelled their {slot['treatment']} appointment at {slot['time']}. "
-            f"Slot value: ${slot['value']}. Date: {slot['date']}. "
+            f"A patient cancelled their cleaning appointment at {slot.get('time', '2:30 PM')}. "
+            f"Slot value: ${slot.get('value', 185)}. Date: today. "
             f"Fill this slot. Rank candidates, explain your reasoning, then start contacting."
         )
 
-    def handle_outcome(self, candidate_name: str, outcome: str) -> str:
-        """Handle a webhook outcome (call result or SMS reply).
-
-        Called by main.py when /call-outcome or /sms-reply is hit.
-        Re-invokes Claude with updated state so it can decide next steps.
-        """
-        # Find the candidate and update status
+    def handle_outcome(self, patient_name: str, outcome: str) -> str:
+        """Handle a comms outcome (call result or SMS reply). Re-invokes Claude."""
+        # Update the candidate
         for i, c in enumerate(self.candidates):
-            if c["name"] == candidate_name:
-                self.candidates = update_candidate_status(self.candidates, i, outcome)
+            if c["name"] == patient_name:
+                self._update_patient_status(i, outcome)
                 self.current_index = i
-                update_candidates(self.candidates)
                 break
 
-        # Log the outcome
-        outcome_label = {
-            "confirmed": "confirmed",
-            "declined": "declined",
-            "no_answer": "no answer",
-            "no_reply": "no reply",
-        }.get(outcome, outcome)
-        add_activity("call_outcome", f"{candidate_name}: {outcome_label}")
+        # Update dashboard
+        outcome_map = {
+            "confirmed": ("sms_reply", "💬", f'{patient_name}: "Yes, that works!"', "success"),
+            "declined": ("no_answer", "📞", f"{patient_name} declined", "warning"),
+            "no_answer": ("no_answer", "📞", f"{patient_name} — no answer", "warning"),
+            "no_reply": ("no_answer", "💬", f"{patient_name} — no reply", "warning"),
+        }
+        phase, icon, msg, log_type = outcome_map.get(
+            outcome, ("no_answer", "📞", f"{patient_name}: {outcome}", "warning")
+        )
+        update_agent_phase(phase, patient_name)
+        add_activity(icon, msg, log_type)
 
         if outcome == "confirmed":
-            return self.run_step(
-                f"{candidate_name} confirmed! Book the appointment."
-            )
+            return self.run_step(f"{patient_name} confirmed! Book the appointment.")
         else:
             return self.run_step(
-                f"Outcome for {candidate_name}: {outcome_label}. "
+                f"Outcome for {patient_name}: {outcome}. "
                 f"Current candidates: {self.candidates}. "
-                f"Current index: {self.current_index}. "
-                f"Decide what to do next."
+                f"Current index: {self.current_index}. Decide what to do next."
             )
 
     def give_up(self) -> None:
-        """Mark the campaign as failed."""
-        update_slot_status("exhausted")
-        update_agent_status("failed")
-        add_activity("error", "All candidates exhausted — slot unfilled.")
+        """All candidates exhausted."""
+        update_agent_phase("idle")
+        update_slot("open")
+        add_activity("❌", "All patients contacted — slot unfilled", "warning")

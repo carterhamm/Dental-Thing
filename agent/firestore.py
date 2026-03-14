@@ -1,158 +1,186 @@
 """
-Firestore write helpers for the dental rescheduling agent.
+Firestore write helpers — matched to Carter's frontend schema.
 
-These are thin wrappers around firebase-admin writes.
-UI person will set up the Firebase project and share credentials.
+Carter's dashboard reads from these collections via onSnapshot:
+  - slots/active        → CancellationSlot component
+  - agent/status        → AgentStatus component
+  - patients/p0..pN     → PatientQueue component
+  - activity_log/       → ActivityLog component (ordered by timestamp desc)
 
-Usage:
-    from agent.firestore import init_firestore, add_activity, update_agent_status
-
-    # Initialize once at startup
-    init_firestore("path/to/serviceAccountKey.json")
-
-    # Then use helpers
-    add_activity("thinking", "Scoring 4 candidates...")
-    update_agent_status("running")
+All Python writes go through these helpers so the dashboard updates in real-time.
 """
 
-import uuid
+import os
 from datetime import datetime, timezone
 
-# Firebase admin SDK - will be initialized at runtime
 _db = None
-_session_ref = None
 
 
 def init_firestore(service_account_path: str | None = None):
-    """
-    Initialize Firebase connection.
-
-    Args:
-        service_account_path: Path to service account JSON file.
-            If None, uses GOOGLE_APPLICATION_CREDENTIALS env var.
-    """
-    global _db, _session_ref
+    """Initialize Firebase connection."""
+    global _db
 
     import firebase_admin
     from firebase_admin import credentials, firestore
 
-    # Avoid re-initializing if already done
     if not firebase_admin._apps:
-        if service_account_path:
+        if service_account_path and os.path.exists(service_account_path):
             cred = credentials.Certificate(service_account_path)
             firebase_admin.initialize_app(cred)
         else:
-            # Use default credentials (GOOGLE_APPLICATION_CREDENTIALS env var)
             firebase_admin.initialize_app()
 
     _db = firestore.client()
-    _session_ref = _db.collection("sessions").document("current")
 
 
-def _get_session_ref():
-    """Get the session document reference, initializing if needed."""
-    if _session_ref is None:
+def _get_db():
+    if _db is None:
         raise RuntimeError("Firestore not initialized. Call init_firestore() first.")
-    return _session_ref
+    return _db
 
 
-def add_activity(activity_type: str, text: str) -> None:
-    """
-    Add an activity log entry.
+# --- Activity Log ---
+# Frontend ActivityLog expects: { icon: str, message: str, type: str, timestamp }
+# type values: 'call' | 'sms' | 'system' | 'success' | 'warning'
 
-    UI will display this in the activity feed in real-time.
-
-    Args:
-        activity_type: One of "event", "thinking", "tool_call",
-            "call_outcome", "sms_sent", "success", "error"
-        text: Human-readable description of the activity
-    """
+def add_activity(icon: str, message: str, log_type: str) -> None:
+    """Add an activity log entry. Dashboard sees this instantly."""
     from firebase_admin import firestore
-
-    session_ref = _get_session_ref()
-    session_ref.update({
-        "activity": firestore.ArrayUnion([{
-            "id": f"act_{uuid.uuid4().hex[:8]}",
-            "type": activity_type,
-            "text": text,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }])
+    db = _get_db()
+    db.collection("activity_log").add({
+        "icon": icon,
+        "message": message,
+        "type": log_type,
+        "timestamp": firestore.SERVER_TIMESTAMP,
     })
 
 
-def update_agent_status(status: str) -> None:
-    """
-    Update the agent_status field.
+# --- Agent Status ---
+# Frontend AgentStatus expects: { phase, currentPatient, attempt, totalPatients }
+# phase: 'idle' | 'calling' | 'no_answer' | 'sms_sent' | 'sms_reply' | 'booking' | 'filled'
 
-    UI shows this in the top bar (idle/running/complete/failed).
-
-    Args:
-        status: One of "idle", "running", "complete", "failed"
-    """
-    session_ref = _get_session_ref()
-    session_ref.update({"agent_status": status})
-
-
-def update_slot_status(status: str, filled_by: str | None = None) -> None:
-    """
-    Update the slot status and optionally who filled it.
-
-    Args:
-        status: One of "open", "cancelled", "filling", "filled", "exhausted"
-        filled_by: Name of patient who filled the slot (if status is "filled")
-    """
-    session_ref = _get_session_ref()
-    updates = {"slot.status": status}
-    if filled_by is not None:
-        updates["slot.filled_by"] = filled_by
-    session_ref.update(updates)
+def update_agent_status(
+    phase: str,
+    current_patient: str = "",
+    attempt: int = 0,
+    total_patients: int = 0,
+) -> None:
+    """Set the full agent status doc."""
+    db = _get_db()
+    db.document("agent/status").set({
+        "phase": phase,
+        "currentPatient": current_patient,
+        "attempt": attempt,
+        "totalPatients": total_patients,
+    })
 
 
-def update_candidates(candidates: list[dict]) -> None:
-    """
-    Replace the candidates array.
-
-    UI shows this in the candidate queue panel.
-
-    Args:
-        candidates: Full list of candidates with current statuses
-    """
-    session_ref = _get_session_ref()
-    session_ref.update({"candidates": candidates})
+def update_agent_phase(phase: str, current_patient: str | None = None) -> None:
+    """Update just the phase (and optionally currentPatient)."""
+    db = _get_db()
+    updates: dict = {"phase": phase}
+    if current_patient is not None:
+        updates["currentPatient"] = current_patient
+    db.document("agent/status").update(updates)
 
 
-def update_recovered(amount: int) -> None:
-    """
-    Update the recovered revenue amount.
+def increment_attempt() -> None:
+    """Increment the attempt counter."""
+    from firebase_admin import firestore
+    db = _get_db()
+    db.document("agent/status").update({"attempt": firestore.Increment(1)})
 
-    UI shows this in the revenue counter.
 
-    Args:
-        amount: Dollar amount recovered
-    """
-    session_ref = _get_session_ref()
-    session_ref.update({"recovered": amount})
+# --- Slot ---
+# Frontend CancellationSlot expects: { patientName, slotTime, slotDate, duration,
+#   estimatedRevenue, status, bookedBy? }
+# status: 'open' | 'booking' | 'filled'
 
+def update_slot(status: str, booked_by: str | None = None) -> None:
+    """Update the cancellation slot status."""
+    db = _get_db()
+    updates: dict = {"status": status}
+    if booked_by is not None:
+        updates["bookedBy"] = booked_by
+    db.document("slots/active").update(updates)
+
+
+# --- Patients ---
+# Frontend PatientQueue expects: { name, phone, lastCleaning, status, order }
+# status: 'queued' | 'calling' | 'no_answer' | 'sms_sent' | 'confirmed' | 'skipped'
+
+def update_patient(patient_id: str, status: str) -> None:
+    """Update a patient's status by doc ID (e.g., 'p0')."""
+    db = _get_db()
+    db.document(f"patients/{patient_id}").update({"status": status})
+
+
+def get_queued_patients() -> list[dict]:
+    """Get all queued patients ordered by priority."""
+    db = _get_db()
+    docs = (
+        db.collection("patients")
+        .where("status", "==", "queued")
+        .order_by("order")
+        .get()
+    )
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+
+def get_all_patients() -> list[dict]:
+    """Get all patients."""
+    db = _get_db()
+    docs = db.collection("patients").order_by("order").get()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+
+def get_patient_by_phone(phone: str) -> dict | None:
+    """Find a patient by phone number."""
+    db = _get_db()
+    docs = db.collection("patients").where("phone", "==", phone).limit(1).get()
+    for d in docs:
+        return {"id": d.id, **d.to_dict()}
+    return None
+
+
+# --- Reset ---
 
 def reset_session() -> None:
-    """
-    Reset the session to initial demo state.
+    """Reset everything to clean demo state."""
+    db = _get_db()
 
-    Called by "Reset Demo" button in UI.
-    """
-    session_ref = _get_session_ref()
-    session_ref.set({
-        "slot": {
-            "id": "slot_001",
-            "time": "2:00 PM",
-            "date": "Today",
-            "treatment": "cleaning",
-            "value": 200,
-            "status": "open",
-            "filled_by": None,
-        },
-        "activity": [],
-        "candidates": [],
-        "recovered": 0,
-        "agent_status": "idle",
+    # Clear activity log
+    for log in db.collection("activity_log").get():
+        log.reference.delete()
+
+    # Reset patients
+    patients = [
+        {"name": "Sarah Chen", "lastCleaning": "8 months ago", "phone": "(555) 012-3456"},
+        {"name": "James Patel", "lastCleaning": "7 months ago", "phone": "(555) 234-5678"},
+        {"name": "Maria Santos", "lastCleaning": "7 months ago", "phone": "(555) 345-6789"},
+        {"name": "Tom Bradley", "lastCleaning": "6 months ago", "phone": "(555) 456-7890"},
+        {"name": "Emma Liu", "lastCleaning": "6 months ago", "phone": "(555) 567-8901"},
+        {"name": "David Kim", "lastCleaning": "5 months ago", "phone": "(555) 678-9012"},
+        {"name": "Lisa Thompson", "lastCleaning": "5 months ago", "phone": "(555) 789-0123"},
+        {"name": "Ryan Garcia", "lastCleaning": "4 months ago", "phone": "(555) 890-1234"},
+    ]
+    for i, p in enumerate(patients):
+        db.document(f"patients/p{i}").set({**p, "status": "queued", "order": i})
+
+    # Reset slot
+    db.document("slots/active").set({
+        "patientName": "Marcus Webb",
+        "slotTime": "2:30 PM",
+        "slotDate": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "duration": 60,
+        "estimatedRevenue": 185,
+        "status": "open",
+    })
+
+    # Reset agent
+    db.document("agent/status").set({
+        "phase": "idle",
+        "currentPatient": "",
+        "attempt": 0,
+        "totalPatients": len(patients),
     })
