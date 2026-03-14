@@ -204,9 +204,10 @@ async def run_orchestrator():
         print(f"Orchestrator error: {e}")
         import traceback
         traceback.print_exc()
-        update_agent_status("failed")
-        update_slot_status("exhausted")
+        # Reset to idle so user can retry after fixing the issue
+        update_agent_status("idle")
         add_activity("error", f"Agent error: {str(e)[:100]}")
+    finally:
         _is_running = False
 
 
