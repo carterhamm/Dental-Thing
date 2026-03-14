@@ -109,7 +109,7 @@ function App() {
         const mapped = candidates.map(c => ({
           name: c.name,
           phone: c.phone,
-          lastCleaning: `${c.days_overdue}d overdue`,
+          lastCleaning: `${c.cycles_overdue || 1} cycle overdue`,
           status: mapCandidateStatus(c.status),
         }));
         setPatients(mapped);
