@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { MenuPill } from './components/MenuAnimation/MenuPill';
 import { CancellationSlot } from './components/dashboard/CancellationSlot';
 import { AgentStatus } from './components/dashboard/AgentStatus';
@@ -8,249 +8,266 @@ import type { Patient } from './components/dashboard/PatientQueue';
 import { ActivityLog } from './components/dashboard/ActivityLog';
 import type { LogEntry } from './components/dashboard/ActivityLog';
 import { StatsBar } from './components/dashboard/StatsBar';
-import { speak, stopSpeaking } from './lib/elevenlabs';
-import {
-  seedDemoData,
-  onSlotChange,
-  onAgentChange,
-  onPatientsChange,
-  onLogsChange,
-  updateSlot,
-  updateAgent,
-  updatePatient as updatePatientDoc,
-  addLog as addFirestoreLog,
-} from './lib/firestore';
+import { onSessionChange, seedSessionData } from './lib/firestore';
+import type { SessionData } from './lib/firestore';
 
-const INITIAL_PATIENTS: Patient[] = [
-  { name: 'Sarah Chen',     lastCleaning: '8 months ago', phone: '(555) 012-3456', status: 'queued' },
-  { name: 'James Patel',    lastCleaning: '7 months ago', phone: '(555) 234-5678', status: 'queued' },
-  { name: 'Maria Santos',   lastCleaning: '7 months ago', phone: '(555) 345-6789', status: 'queued' },
-  { name: 'Tom Bradley',    lastCleaning: '6 months ago', phone: '(555) 456-7890', status: 'queued' },
-  { name: 'Emma Liu',       lastCleaning: '6 months ago', phone: '(555) 567-8901', status: 'queued' },
-  { name: 'David Kim',      lastCleaning: '5 months ago', phone: '(555) 678-9012', status: 'queued' },
-  { name: 'Lisa Thompson',  lastCleaning: '5 months ago', phone: '(555) 789-0123', status: 'queued' },
-  { name: 'Ryan Garcia',    lastCleaning: '4 months ago', phone: '(555) 890-1234', status: 'queued' },
-];
+const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 
-const INITIAL_LOG: LogEntry[] = [
-  { time: '2:45 PM', icon: '⚠️', message: 'Cancellation received — Marcus Webb', type: 'warning' },
-];
+type View = 'dashboard' | 'patients' | 'activity' | 'settings';
 
-function now() {
-  const d = new Date();
-  const h = d.getHours();
-  const m = d.getMinutes().toString().padStart(2, '0');
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  return `${h > 12 ? h - 12 : h}:${m} ${ampm}`;
+// --- Mapping helpers ---
+function mapSlotStatus(s?: string): 'open' | 'booking' | 'filled' {
+  if (s === 'filled') return 'filled';
+  if (s === 'filling') return 'booking';
+  return 'open';
 }
 
+function mapCandidateStatus(s: string): Patient['status'] {
+  const m: Record<string, Patient['status']> = {
+    calling: 'calling', texting: 'sms_sent', no_answer: 'no_answer',
+    declined: 'skipped', no_reply: 'skipped', confirmed: 'confirmed',
+  };
+  return m[s] || 'queued';
+}
+
+function derivePhase(data: SessionData): AgentPhase {
+  if (data.agent_status === 'complete' || data.slot?.status === 'filled') return 'filled';
+  if (data.agent_status !== 'running') return 'idle';
+  const c = data.candidates || [];
+  const a = c.find(x => x.status === 'calling' || x.status === 'texting');
+  if (a?.status === 'calling') return 'calling';
+  if (a?.status === 'texting') return 'sms_sent';
+  if (c.some(x => x.status === 'confirmed')) return 'filled';
+  return 'calling';
+}
+
+function actIcon(t: string) {
+  return { call_outcome: '📞', sms_sent: '💬', success: '✅', error: '❌', thinking: '🧠', tool_call: '⚙️' }[t] || '📋';
+}
+
+function actType(t: string): LogEntry['type'] {
+  return { call_outcome: 'call' as const, sms_sent: 'sms' as const, success: 'success' as const, error: 'warning' as const }[t] || 'system';
+}
+
+function fmtTs(ts: string) {
+  try { const d = new Date(ts); const h = d.getHours(); return `${h > 12 ? h - 12 : h}:${d.getMinutes().toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`; }
+  catch { return ''; }
+}
+
+function now() {
+  const d = new Date(), h = d.getHours(), m = d.getMinutes().toString().padStart(2, '0');
+  return `${h > 12 ? h - 12 : h}:${m} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+import { IconCheck, IconDollar, IconPhone, IconMessage, IconTooth } from './components/Icons';
+
 function App() {
+  const [view, setView] = useState<View>('dashboard');
   const [phase, setPhase] = useState<AgentPhase>('idle');
-  const [patients, setPatients] = useState<Patient[]>(INITIAL_PATIENTS);
-  const [log, setLog] = useState<LogEntry[]>(INITIAL_LOG);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [log, setLog] = useState<LogEntry[]>([]);
   const [slotStatus, setSlotStatus] = useState<'open' | 'booking' | 'filled'>('open');
+  const [slotTime, setSlotTime] = useState('—');
+  const [slotFilledBy, setSlotFilledBy] = useState<string | undefined>();
+  const [recovered, setRecovered] = useState(0);
+  const [callCount, setCallCount] = useState(0);
+  const [smsCount, setSmsCount] = useState(0);
+  const [filledCount, setFilledCount] = useState(0);
+  const [currentPatient, setCurrentPatient] = useState('');
   const [attempt, setAttempt] = useState(0);
-  const [demoRunning, setDemoRunning] = useState(false);
-  const [filledToday, setFilledToday] = useState(3);
-  const [revenue, setRevenue] = useState(425);
-  const [calls, setCalls] = useState(12);
-  const [texts, setTexts] = useState(4);
-  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const [totalPatients, setTotalPatients] = useState(0);
+  const [triggering, setTriggering] = useState(false);
+  const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
 
-  // Firestore real-time listeners (always on)
+  const showToast = useCallback((msg: string, type: 'ok' | 'err' = 'ok') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  // Firestore listener
   useEffect(() => {
-    const unsubs = [
-      onSlotChange((slot) => setSlotStatus(slot.status)),
-      onAgentChange((agent) => {
-        setPhase(agent.phase as AgentPhase);
-        setAttempt(agent.attempt);
-      }),
-      onPatientsChange((pts) => {
-        setPatients(pts.map(p => ({
-          name: p.name, lastCleaning: p.lastCleaning, phone: p.phone,
-          status: p.status as Patient['status'],
-        })));
-      }),
-      onLogsChange((logs) => {
-        setLog(logs.map(l => ({
-          time: l.timestamp?.toDate
-            ? (() => { const d = l.timestamp.toDate(); const h = d.getHours(); return `${h > 12 ? h - 12 : h}:${d.getMinutes().toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`; })()
-            : now(),
-          icon: l.icon, message: l.message, type: l.type,
-        })));
-      }),
-    ];
-    return () => unsubs.forEach(u => u());
-  }, []);
-
-  const addLocalLog = useCallback((entry: Omit<LogEntry, 'time'>) => {
-    setLog(prev => [{ ...entry, time: now() }, ...prev]);
-  }, []);
-
-  const updateLocalPatient = useCallback((index: number, status: Patient['status']) => {
-    setPatients(prev => prev.map((p, i) => i === index ? { ...p, status } : p));
-  }, []);
-
-  const runDemo = useCallback(async () => {
-    if (demoRunning) return;
-    setDemoRunning(true);
-    stopSpeaking();
-    timersRef.current.forEach(clearTimeout);
-    timersRef.current = [];
-
-    setPatients(INITIAL_PATIENTS);
-    setLog(INITIAL_LOG);
-    setSlotStatus('open');
-    setAttempt(0);
-    setPhase('idle');
-
-    seedDemoData().catch(() => {});
-
-    const fireLog = async (icon: string, message: string, type: LogEntry['type']) => {
-      addLocalLog({ icon, message, type });
-      addFirestoreLog(icon, message, type).catch(() => {});
-    };
-
-    const steps: Array<{ delay: number; action: () => Promise<void> | void }> = [
-      {
-        delay: 800,
-        action: async () => {
-          setPhase('calling');
-          setAttempt(1);
-          updateLocalPatient(0, 'calling');
-          await fireLog('📞', 'Calling Sarah Chen...', 'call');
-          setCalls(c => c + 1);
-          updateAgent({ phase: 'calling', currentPatient: 'Sarah Chen', attempt: 1 }).catch(() => {});
-          updatePatientDoc('p0', { status: 'calling' }).catch(() => {});
-          speak(
-            "Hi Sarah, this is the dental office calling. We had a cancellation today at 2:30 PM and wanted to see if you'd like to come in for your cleaning appointment. Would that work for you?"
-          ).catch(() => {});
-        },
-      },
-      {
-        delay: 5000,
-        action: async () => {
-          setPhase('no_answer');
-          updateLocalPatient(0, 'no_answer');
-          await fireLog('📞', 'Sarah Chen — no answer', 'warning');
-          updateAgent({ phase: 'no_answer' }).catch(() => {});
-          updatePatientDoc('p0', { status: 'no_answer' }).catch(() => {});
-        },
-      },
-      {
-        delay: 1500,
-        action: async () => {
-          setPhase('sms_sent');
-          updateLocalPatient(0, 'sms_sent');
-          await fireLog('💬', 'SMS sent to Sarah Chen: "Hi Sarah, we have an opening at 2:30 PM today for a cleaning. Would you like to book it?"', 'sms');
-          setTexts(t => t + 1);
-          updateAgent({ phase: 'sms_sent' }).catch(() => {});
-          updatePatientDoc('p0', { status: 'sms_sent' }).catch(() => {});
-        },
-      },
-      {
-        delay: 4000,
-        action: async () => {
-          setPhase('sms_reply');
-          await fireLog('💬', 'Sarah Chen: "Yes, 2:30 works for me!"', 'success');
-          speak("Great news. Sarah Chen replied yes, 2:30 works for me. Confirming the appointment now.").catch(() => {});
-          updateAgent({ phase: 'sms_reply' }).catch(() => {});
-        },
-      },
-      {
-        delay: 2000,
-        action: async () => {
-          setPhase('booking');
-          setSlotStatus('booking');
-          updateLocalPatient(0, 'confirmed');
-          await fireLog('📋', 'Confirming appointment...', 'system');
-          updateAgent({ phase: 'booking' }).catch(() => {});
-          updateSlot({ status: 'booking' }).catch(() => {});
-          updatePatientDoc('p0', { status: 'confirmed' }).catch(() => {});
-        },
-      },
-      {
-        delay: 2000,
-        action: async () => {
-          setPhase('filled');
-          setSlotStatus('filled');
-          setFilledToday(f => f + 1);
-          setRevenue(r => r + 185);
-          await fireLog('✅', 'Slot filled! Sarah Chen booked for 2:30 PM', 'success');
-          setDemoRunning(false);
-          updateAgent({ phase: 'filled' }).catch(() => {});
-          updateSlot({ status: 'filled', bookedBy: 'Sarah Chen' }).catch(() => {});
-        },
-      },
-    ];
-
-    let totalDelay = 0;
-    steps.forEach(step => {
-      totalDelay += step.delay;
-      const timer = setTimeout(() => step.action(), totalDelay);
-      timersRef.current.push(timer);
+    const unsub = onSessionChange((data) => {
+      if (!data) return;
+      setSlotStatus(mapSlotStatus(data.slot?.status));
+      setSlotTime(data.slot?.time || '—');
+      setSlotFilledBy(data.slot?.filled_by || undefined);
+      setPhase(derivePhase(data));
+      setRecovered(data.recovered || 0);
+      const c = data.candidates || [];
+      setTotalPatients(c.length);
+      setPatients(c.map(x => ({
+        name: x.name, phone: x.phone,
+        lastCleaning: `${x.days_overdue}d overdue`,
+        status: mapCandidateStatus(x.status),
+      })));
+      const ai = c.findIndex(x => x.status === 'calling' || x.status === 'texting');
+      if (ai >= 0) { setCurrentPatient(c[ai].name); setAttempt(ai + 1); }
+      else { const lt = c.findIndex(x => x.status !== 'waiting'); setAttempt(lt >= 0 ? lt + 1 : 0); setCurrentPatient(lt >= 0 ? c[lt].name : ''); }
+      setCallCount(c.filter(x => x.status !== 'waiting').length);
+      setSmsCount(c.filter(x => ['texting', 'no_reply'].includes(x.status)).length);
+      setFilledCount(c.filter(x => x.status === 'confirmed').length);
+      const acts = data.activity || [];
+      setLog([...acts].reverse().map(a => ({ time: fmtTs(a.timestamp), icon: actIcon(a.type), message: a.text, type: actType(a.type) })));
     });
-  }, [demoRunning, addLocalLog, updateLocalPatient]);
-
-  useEffect(() => {
-    return () => {
-      timersRef.current.forEach(clearTimeout);
-      stopSpeaking();
-    };
+    return () => unsub();
   }, []);
+
+  const triggerCancellation = useCallback(async () => {
+    setTriggering(true);
+    try {
+      const res = await fetch(`${BACKEND}/cancellation`, { method: 'POST' });
+      if (res.ok) { showToast('Agent started — filling cancellation slot', 'ok'); }
+      else { showToast(`Backend error: ${res.status}`, 'err'); }
+    } catch {
+      showToast(`Cannot reach backend at ${BACKEND}`, 'err');
+    } finally {
+      setTimeout(() => setTriggering(false), 2000);
+    }
+  }, [showToast]);
+
+  const handleMenuAction = useCallback(async (action: string) => {
+    if (action === 'seed') {
+      try { await seedSessionData(); showToast('Session data seeded to Firestore', 'ok'); }
+      catch { showToast('Failed to seed — check Firebase console', 'err'); }
+    }
+    if (action === 'reset') {
+      try { await fetch(`${BACKEND}/reset`, { method: 'POST' }); } catch {}
+      try { await seedSessionData(); showToast('Agent reset', 'ok'); } catch {}
+    }
+  }, [showToast]);
 
   const [clock, setClock] = useState(now());
-  useEffect(() => {
-    const id = setInterval(() => setClock(now()), 10000);
-    return () => clearInterval(id);
-  }, []);
+  useEffect(() => { const id = setInterval(() => setClock(now()), 10000); return () => clearInterval(id); }, []);
 
   return (
-    <div className="h-screen flex flex-col bg-[#f2f2f7]">
+    <div className="h-screen flex flex-col" style={{ background: 'radial-gradient(ellipse at 15% 0%, rgba(125,249,255,0.1) 0%, transparent 50%), radial-gradient(ellipse at 85% 100%, rgba(125,249,255,0.06) 0%, transparent 50%), #f0f2f5' }}>
       {/* Header */}
-      <header className="flex items-center justify-between px-5 h-14 shrink-0 border-b border-gray-200/80 bg-white/80 backdrop-blur-xl">
+      <header className="flex items-center justify-between px-6 h-14 shrink-0 bg-white/90 backdrop-blur-xl relative z-10"
+        style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+        <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-gradient-to-r from-[#7DF9FF] via-[#7DF9FF]/30 to-transparent" />
         <div className="flex items-center gap-4">
-          <MenuPill />
-          <span className="text-[15px] font-semibold text-gray-900 tracking-tight">DentAI</span>
+          <MenuPill onAction={handleMenuAction} onNavigate={(v) => setView(v as View)} activeView={view} />
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-[#7DF9FF] text-[#006B7A] flex items-center justify-center">
+              <IconTooth />
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-[16px] font-bold text-slate-900 tracking-tight">DentAI</span>
+              <span className="text-[11px] text-slate-400 font-medium hidden sm:inline">Cancellation Recovery</span>
+            </div>
+          </div>
         </div>
-
         <div className="flex items-center gap-3">
-          <button
-            onClick={runDemo}
-            disabled={demoRunning}
+          <button onClick={triggerCancellation} disabled={triggering || phase !== 'idle'}
             className={`text-[11px] font-semibold px-4 py-1.5 rounded-full transition-all ${
-              demoRunning
-                ? 'bg-[#7DF9FF]/30 text-[#0097A7] cursor-not-allowed'
-                : 'bg-[#7DF9FF] text-gray-900 hover:bg-[#5CE8F0] cursor-pointer shadow-sm'
+              triggering || phase !== 'idle'
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                : 'bg-[#7DF9FF] text-gray-900 hover:bg-[#5CE8F0] cursor-pointer'
             }`}
-          >
-            {demoRunning ? 'Running...' : 'Run Demo'}
+            style={phase === 'idle' && !triggering ? { boxShadow: '0 2px 8px rgba(125,249,255,0.4)' } : undefined}>
+            {triggering ? 'Starting...' : 'Trigger Cancellation'}
           </button>
-          <span className="text-[13px] text-gray-300 tabular-nums">{clock}</span>
+          <span className="text-[12px] text-gray-300 font-mono tabular-nums">{clock}</span>
         </div>
       </header>
 
-      {/* Main Grid */}
-      <main className="flex-1 p-5 overflow-hidden">
-        <div className="h-full grid grid-cols-2 grid-rows-[200px_1fr_80px] gap-4">
-          <CancellationSlot status={slotStatus} bookedBy="Sarah Chen" />
-          <AgentStatus
-            phase={phase}
-            currentPatient={patients[0]?.name || ''}
-            attempt={attempt}
-            totalPatients={patients.length}
-          />
-          <PatientQueue patients={patients} />
-          <ActivityLog entries={log} />
-          <div className="col-span-2">
-            <StatsBar stats={[
-              { label: 'Slots Filled', value: filledToday, accent: 'green' },
-              { label: 'Revenue', value: `$${revenue}`, accent: 'gray' },
-              { label: 'Calls Made', value: calls, accent: 'cyan' },
-              { label: 'Texts Sent', value: texts, accent: 'purple' },
-            ]} />
-          </div>
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 animate-fadeIn">
+          <div className={`px-4 py-2 rounded-xl text-[12px] font-medium shadow-lg backdrop-blur-sm ${
+            toast.type === 'ok' ? 'bg-[#7DF9FF]/90 text-gray-900' : 'bg-red-500/90 text-white'
+          }`}>{toast.msg}</div>
         </div>
+      )}
+
+      {/* Views */}
+      <main className="flex-1 px-5 pt-4 pb-5 overflow-hidden">
+        {view === 'dashboard' && (
+          <div className="h-full grid grid-cols-4 gap-4 animate-fadeIn" style={{ gridTemplateRows: '88px minmax(240px, 1fr) minmax(0, 2fr)' }}>
+            <StatsBar stats={[
+              { label: 'Filled', value: filledCount, accent: 'green', icon: <IconCheck /> },
+              { label: 'Recovered', value: `$${recovered}`, accent: 'gray', icon: <IconDollar /> },
+              { label: 'Calls', value: callCount, accent: 'cyan', icon: <IconPhone /> },
+              { label: 'Texts', value: smsCount, accent: 'purple', icon: <IconMessage /> },
+            ]} />
+            <div className="col-span-2"><CancellationSlot status={slotStatus} bookedBy={slotFilledBy} slotTime={slotTime} /></div>
+            <div className="col-span-2"><AgentStatus phase={phase} currentPatient={currentPatient} attempt={attempt} totalPatients={totalPatients} /></div>
+            <div className="col-span-2"><PatientQueue patients={patients} /></div>
+            <div className="col-span-2"><ActivityLog entries={log} /></div>
+          </div>
+        )}
+
+        {view === 'patients' && (
+          <div className="h-full animate-fadeIn">
+            <div className="flex items-center justify-between mb-4">
+              <h1 className="text-xl font-bold text-gray-900">Patient Queue</h1>
+              <span className="text-[12px] text-gray-400 font-mono">{patients.length} patients</span>
+            </div>
+            <div className="h-[calc(100%-48px)]"><PatientQueue patients={patients} /></div>
+          </div>
+        )}
+
+        {view === 'activity' && (
+          <div className="h-full animate-fadeIn">
+            <div className="flex items-center justify-between mb-4">
+              <h1 className="text-xl font-bold text-gray-900">Activity Log</h1>
+              <span className="text-[12px] text-gray-400 font-mono">{log.length} events</span>
+            </div>
+            <div className="h-[calc(100%-48px)]"><ActivityLog entries={log} /></div>
+          </div>
+        )}
+
+        {view === 'settings' && (
+          <div className="max-w-2xl mx-auto pt-8 animate-fadeIn space-y-6">
+            <h1 className="text-xl font-bold text-gray-900 mb-6">Settings</h1>
+
+            <div className="bg-white rounded-2xl p-6" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
+              <h2 className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase mb-4">Backend</h2>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[12px] text-gray-500 font-medium">API URL</label>
+                  <div className="mt-1 px-3 py-2 rounded-lg bg-gray-50 border border-gray-200 text-[13px] font-mono text-gray-700">{BACKEND}</div>
+                </div>
+                <p className="text-[11px] text-gray-400">Set <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">VITE_BACKEND_URL</code> in your <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">.env</code> file.</p>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-6" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
+              <h2 className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase mb-4">Twilio Webhook</h2>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[12px] text-gray-500 font-medium">Messaging Webhook URL</label>
+                  <div className="mt-1 px-3 py-2 rounded-lg bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[13px] font-mono text-[#0097A7]">
+                    {BACKEND}/webhooks/twilio-sms
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[12px] text-gray-500 font-medium">Voice Call Outcome Webhook</label>
+                  <div className="mt-1 px-3 py-2 rounded-lg bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[13px] font-mono text-[#0097A7]">
+                    {BACKEND}/call-outcome
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  Twilio Console → Phone Numbers → (385) 300-0856 → Messaging → "A message comes in" → paste the webhook URL above. Method: POST.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-6" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
+              <h2 className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase mb-4">Quick Actions</h2>
+              <div className="flex gap-3">
+                <button onClick={() => handleMenuAction('seed')}
+                  className="px-4 py-2 rounded-xl bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[12px] font-semibold text-[#0097A7] hover:bg-[#7DF9FF]/20 transition-colors cursor-pointer">
+                  Seed Data
+                </button>
+                <button onClick={() => handleMenuAction('reset')}
+                  className="px-4 py-2 rounded-xl bg-red-50 border border-red-100 text-[12px] font-semibold text-red-500 hover:bg-red-100 transition-colors cursor-pointer">
+                  Reset Agent
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

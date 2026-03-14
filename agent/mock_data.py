@@ -16,6 +16,35 @@ Patient fields:
 
 # Patients on the recall list (overdue for appointments)
 RECALL_LIST = [
+    # --- Team test numbers (will rank #1, #2, #3 for cleaning slot) ---
+    {
+        "name": "Spencer Hammond",
+        "phone": "+17195053575",
+        "treatment_needed": "cleaning",
+        "cycles_overdue": 4,
+        "reliability_score": 0.99,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": True,
+    },
+    {
+        "name": "Carter Hammond",
+        "phone": "+17192136213",
+        "treatment_needed": "cleaning",
+        "cycles_overdue": 3,
+        "reliability_score": 0.97,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": True,
+    },
+    {
+        "name": "Eddy Kim",
+        "phone": "+10000000000",  # TODO: update with real number
+        "treatment_needed": "cleaning",
+        "cycles_overdue": 3,
+        "reliability_score": 0.95,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
+    },
+
     # --- High priority cleaning patients ---
     {
         "name": "Sarah Kim",

@@ -1,37 +1,49 @@
 """
-FastAPI server for the dental rescheduling agent.
-
-Combines Eddy's brain logic with Spencer's Claude orchestrator.
+FastAPI server — the deployed backend for the dental rescheduling agent.
 
 Endpoints:
-- POST /cancellation  → Triggers the Claude agent to start filling the slot
-- POST /call-outcome  → Receives webhook from ElevenLabs/Twilio voice
-- POST /sms-reply     → Receives webhook from Twilio SMS
-- POST /reset         → Resets demo state
-- GET  /              → Health check
+  POST /cancellation           → Start the Claude agent
+  POST /call-outcome           → Voice call outcome (webhook or manual)
+  POST /sms-reply              → SMS reply (webhook or manual)
+  POST /webhooks/twilio-sms    → Twilio inbound SMS webhook
+  POST /webhooks/elevenlabs    → ElevenLabs post-call webhook
+  POST /reset                  → Reset demo state
+  GET  /                       → Health check
 
-Run with:
-    uvicorn main:app --reload --port 8000
+Run locally:
+  uvicorn main:app --reload --port 8000
 """
 
 import os
+import json
+import base64
+import tempfile
 import asyncio
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
-from agent.firestore import init_firestore, reset_session
+load_dotenv()
+
+from agent.firestore import (
+    init_firestore,
+    reset_session,
+    get_patient_by_phone,
+    add_activity,
+    update_agent_status,
+    update_slot_status,
+)
 from agent.mock_data import DEMO_SLOT
 from orchestrator import Orchestrator
-
-load_dotenv()
 
 
 # --- Orchestrator singleton ---
 _orchestrator: Orchestrator | None = None
+_is_running = False
 
 
 def get_orchestrator() -> Orchestrator:
@@ -39,27 +51,41 @@ def get_orchestrator() -> Orchestrator:
     if _orchestrator is None:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         _orchestrator = Orchestrator(api_key)
-        # Wire up comms stubs — UI/Voice person replaces these
         _orchestrator.on_voice_call = trigger_voice_call
         _orchestrator.on_sms = send_sms
     return _orchestrator
 
 
-# --- App Setup ---
+# --- Firebase init (supports file path OR base64 env var for Railway) ---
+
+def _init_firebase():
+    """Initialize Firebase from file or FIREBASE_SERVICE_ACCOUNT_BASE64 env var."""
+    b64 = os.environ.get("FIREBASE_SERVICE_ACCOUNT_BASE64", "")
+    if b64:
+        try:
+            decoded = base64.b64decode(b64)
+            sa_dict = json.loads(decoded)
+            tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+            json.dump(sa_dict, tmp)
+            tmp.close()
+            init_firestore(tmp.name)
+            print("Firebase initialized from FIREBASE_SERVICE_ACCOUNT_BASE64")
+            return
+        except Exception as e:
+            print(f"Failed to decode FIREBASE_SERVICE_ACCOUNT_BASE64: {e}")
+
+    path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "serviceAccountKey.json")
+    if os.path.exists(path):
+        init_firestore(path)
+        print(f"Firebase initialized from {path}")
+    else:
+        print("No Firebase credentials found. Dashboard won't update but agent still works.")
+        init_firestore(None)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize Firebase on startup."""
-    service_account_path = os.environ.get(
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "serviceAccountKey.json",
-    )
-    if os.path.exists(service_account_path):
-        init_firestore(service_account_path)
-        print(f"Firebase initialized with {service_account_path}")
-    else:
-        print(f"WARNING: {service_account_path} not found. Firebase not initialized.")
-        print("Set GOOGLE_APPLICATION_CREDENTIALS or place serviceAccountKey.json in project root.")
+    _init_firebase()
     yield
 
 
@@ -78,39 +104,31 @@ app.add_middleware(
 )
 
 
-# --- Agent state ---
-_is_running = False
-
-
-# --- Pydantic Models ---
+# --- Models ---
 
 class CallOutcome(BaseModel):
-    """Webhook payload when a voice call ends."""
     patient_name: str
     outcome: str  # "confirmed", "declined", "no_answer"
 
 
 class SMSReply(BaseModel):
-    """Webhook payload when an SMS reply is received."""
     patient_name: str
-    reply: str  # The actual text message
+    reply: str
 
 
 # --- Endpoints ---
 
 @app.get("/")
 async def root():
-    """Health check."""
     return {"status": "ok", "agent_running": _is_running}
 
 
 @app.post("/cancellation")
 async def trigger_cancellation(background_tasks: BackgroundTasks):
-    """Trigger the Claude agent to start filling a cancelled slot."""
+    """Start the Claude agent."""
     global _is_running
     if _is_running:
         return {"status": "already_running"}
-
     _is_running = True
     background_tasks.add_task(run_orchestrator)
     return {"status": "agent_started"}
@@ -118,55 +136,37 @@ async def trigger_cancellation(background_tasks: BackgroundTasks):
 
 @app.post("/call-outcome")
 async def call_outcome(body: CallOutcome, background_tasks: BackgroundTasks):
-    """Receive voice call outcome from ElevenLabs/Twilio webhook.
-
-    UI/Voice person's code POSTs here when a call ends.
-    """
+    """Receive voice call outcome."""
     if not _is_running:
         return {"status": "agent_not_running"}
 
-    # Map outcome string to candidate status
-    status_map = {
-        "confirmed": "confirmed",
-        "declined": "declined",
-        "no_answer": "no_answer",
-    }
+    status_map = {"confirmed": "confirmed", "declined": "declined", "no_answer": "no_answer"}
     new_status = status_map.get(body.outcome, "no_answer")
 
-    # Let the orchestrator handle it (Claude decides next steps)
-    background_tasks.add_task(
-        handle_outcome_async, body.patient_name, new_status
-    )
+    background_tasks.add_task(handle_outcome_bg, body.patient_name, new_status)
     return {"status": "received", "patient": body.patient_name, "outcome": body.outcome}
 
 
 @app.post("/sms-reply")
 async def sms_reply(body: SMSReply, background_tasks: BackgroundTasks):
-    """Receive SMS reply from Twilio webhook.
-
-    UI/Voice person's code POSTs here when a patient texts back.
-    """
+    """Receive SMS reply (manual or from frontend)."""
     if not _is_running:
         return {"status": "agent_not_running"}
 
-    # Parse reply
     reply_lower = body.reply.lower().strip()
-    if reply_lower in ("yes", "y", "yeah", "sure", "ok", "okay"):
+    if reply_lower in ("yes", "y", "yeah", "sure", "ok", "okay", "yep", "absolutely"):
         new_status = "confirmed"
-    elif reply_lower in ("no", "n", "nope", "can't", "cannot"):
-        new_status = "declined"
     else:
         new_status = "declined"
 
-    background_tasks.add_task(
-        handle_outcome_async, body.patient_name, new_status
-    )
+    background_tasks.add_task(handle_outcome_bg, body.patient_name, new_status)
     return {"status": "received", "patient": body.patient_name, "reply": body.reply}
 
 
+# --- Reset ---
+
 @app.post("/reset")
 async def reset_demo():
-    """Reset demo to initial state."""
     global _is_running, _orchestrator
     _is_running = False
     _orchestrator = None
@@ -174,78 +174,181 @@ async def reset_demo():
     return {"status": "reset_complete"}
 
 
-# --- Background tasks ---
+# --- Background runners ---
 
 async def run_orchestrator():
-    """Start the Claude orchestrator in background."""
     global _is_running
     try:
         orch = get_orchestrator()
-        # run_step is sync (calls Anthropic API) — run in thread pool
         await asyncio.to_thread(orch.start, DEMO_SLOT)
     except Exception as e:
         print(f"Orchestrator error: {e}")
-        from agent.firestore import update_agent_status, add_activity, update_slot_status
+        import traceback
+        traceback.print_exc()
         update_agent_status("failed")
         update_slot_status("exhausted")
         add_activity("error", f"Agent error: {str(e)[:100]}")
         _is_running = False
 
 
-async def handle_outcome_async(patient_name: str, outcome: str):
-    """Handle webhook outcome — re-invoke Claude to decide next steps."""
+async def handle_outcome_bg(patient_name: str, outcome: str):
     global _is_running
     try:
         orch = get_orchestrator()
         await asyncio.to_thread(orch.handle_outcome, patient_name, outcome)
-        # Check if agent is done
         if orch.candidates:
+            any_confirmed = any(c["status"] == "confirmed" for c in orch.candidates)
             all_terminal = all(
                 c["status"] in ("declined", "no_answer", "no_reply", "confirmed")
                 for c in orch.candidates
             )
-            any_confirmed = any(c["status"] == "confirmed" for c in orch.candidates)
             if any_confirmed or all_terminal:
                 _is_running = False
     except Exception as e:
         print(f"Outcome handler error: {e}")
+        import traceback
+        traceback.print_exc()
         _is_running = False
 
 
-# --- Voice/SMS Stubs (UI/VOICE PERSON OWNS THESE) ---
+# --- Twilio SMS ---
 
-def trigger_voice_call(patient: dict):
-    """Trigger a voice call via ElevenLabs Conversational AI + Twilio.
+TWILIO_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_PHONE = os.environ.get("TWILIO_PHONE_NUMBER", "")
 
-    UI/VOICE PERSON: Replace this stub with your ElevenLabs integration.
-    When the call ends, your code should POST to /call-outcome:
-        POST /call-outcome
-        {"patient_name": "Sarah Kim", "outcome": "confirmed"}
-        outcome is one of: "confirmed", "declined", "no_answer"
+_phone_to_patient: dict[str, str] = {}
+_twilio_client = None
 
-    Args:
-        patient: Dict with "name" and "phone" keys
-    """
-    print(f"[STUB] Would call {patient['name']} at {patient['phone']}")
+
+def get_twilio():
+    global _twilio_client
+    if _twilio_client is None and TWILIO_SID and TWILIO_AUTH:
+        from twilio.rest import Client
+        _twilio_client = Client(TWILIO_SID, TWILIO_AUTH)
+    return _twilio_client
 
 
 def send_sms(patient: dict, slot: dict):
-    """Send an SMS via Twilio.
+    """Send SMS via Twilio. No-ops gracefully if Twilio not configured."""
+    client = get_twilio()
+    if not client:
+        print(f"[NO TWILIO] Would SMS {patient['name']} at {patient['phone']}")
+        return
 
-    UI/VOICE PERSON: Replace this stub with your Twilio integration.
-    When the patient replies, your code should POST to /sms-reply:
-        POST /sms-reply
-        {"patient_name": "Sarah Kim", "reply": "YES"}
+    body = (
+        f"Hi {patient['name'].split()[0]}, this is your dental office. "
+        f"We have an opening at {slot.get('time', 'today')} for a "
+        f"{slot.get('treatment', 'cleaning')}. Would you like to book it? "
+        f"Reply YES or NO."
+    )
+    msg = client.messages.create(
+        body=body,
+        from_=TWILIO_PHONE,
+        to=patient["phone"],
+    )
+    _phone_to_patient[patient["phone"]] = patient["name"]
+    print(f"[TWILIO] SMS sent to {patient['name']}: {msg.sid}")
 
-    Args:
-        patient: Dict with "name" and "phone" keys
-        slot: Dict with appointment details
-    """
-    print(f"[STUB] Would SMS {patient['name']} at {patient['phone']}")
+
+@app.post("/webhooks/twilio-sms")
+async def twilio_sms_webhook(request: Request):
+    """Twilio inbound SMS webhook."""
+    form = await request.form()
+    from_number = form.get("From", "")
+    body_text = form.get("Body", "")
+
+    print(f"Twilio SMS from {from_number}: {body_text}")
+
+    # Try in-memory lookup first (populated when we send SMS)
+    patient_name = _phone_to_patient.get(from_number, "")
+    if not patient_name:
+        # Try fuzzy match on last 10 digits
+        stripped = from_number.lstrip("+1")
+        for phone, name in _phone_to_patient.items():
+            if phone.replace("-", "").replace(" ", "").replace("(", "").replace(")", "").endswith(stripped[-10:]):
+                patient_name = name
+                break
+
+    # Fallback to Firestore lookup
+    if not patient_name:
+        patient = get_patient_by_phone(from_number)
+        if patient:
+            patient_name = patient["name"]
+
+    if not patient_name:
+        print(f"[TWILIO] Unknown sender: {from_number} said '{body_text}'")
+        return Response(content='<Response></Response>', media_type="application/xml")
+
+    reply_lower = body_text.lower().strip()
+    if reply_lower in ("yes", "y", "yeah", "sure", "ok", "okay", "yep", "absolutely"):
+        new_status = "confirmed"
+    else:
+        new_status = "declined"
+
+    if _is_running:
+        asyncio.create_task(handle_outcome_bg(patient_name, new_status))
+
+    return Response(content='<Response></Response>', media_type="application/xml")
+
+
+# --- ElevenLabs Voice Calls ---
+
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_AGENT_ID = os.environ.get("ELEVENLABS_AGENT_ID", "")
+
+
+def trigger_voice_call(patient: dict):
+    """Trigger outbound voice call via ElevenLabs. No-ops if not configured."""
+    if not ELEVENLABS_API_KEY or not ELEVENLABS_AGENT_ID:
+        print(f"[NO ELEVENLABS] Would call {patient['name']} at {patient['phone']}")
+        return
+
+    import requests
+    resp = requests.post(
+        "https://api.elevenlabs.io/v1/convai/conversation/create-call",
+        headers={
+            "xi-api-key": ELEVENLABS_API_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "agent_id": ELEVENLABS_AGENT_ID,
+            "customer_number": patient["phone"],
+        },
+    )
+    if resp.ok:
+        print(f"[ELEVENLABS] Call initiated to {patient['name']}: {resp.json()}")
+        _phone_to_patient[patient["phone"]] = patient["name"]
+    else:
+        print(f"[ELEVENLABS] Call failed: {resp.status_code} {resp.text}")
+
+
+@app.post("/webhooks/elevenlabs")
+async def elevenlabs_webhook(request: Request, background_tasks: BackgroundTasks):
+    """ElevenLabs POSTs here when a voice conversation ends."""
+    data = await request.json()
+    print(f"ElevenLabs webhook: {data}")
+
+    analysis = data.get("analysis", {})
+    call_successful = analysis.get("call_successful", False)
+    if call_successful:
+        outcome = "confirmed"
+    elif "declined" in str(analysis).lower() or "no" in str(analysis).lower():
+        outcome = "declined"
+    else:
+        outcome = "no_answer"
+
+    orch = get_orchestrator()
+    if orch.current_index >= 0 and orch.current_index < len(orch.candidates):
+        patient_name = orch.candidates[orch.current_index]["name"]
+        if _is_running:
+            background_tasks.add_task(handle_outcome_bg, patient_name, outcome)
+
+    return {"status": "received"}
 
 
 # --- Run directly ---
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))

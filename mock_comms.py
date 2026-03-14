@@ -1,8 +1,8 @@
 """
-Mock comms layer — simulates ElevenLabs voice calls and Twilio SMS.
+Mock comms — simulates voice calls and SMS for local testing.
 
-POSTs outcomes to the FastAPI webhook endpoints, just like the real
-UI/Voice person's code would.
+Watches Firestore patients collection for status changes (calling/sms_sent),
+then POSTs outcomes to the FastAPI server like real Twilio/ElevenLabs would.
 
 Usage:
     python mock_comms.py                     # Default: no_answer → confirmed
@@ -10,20 +10,21 @@ Usage:
     python mock_comms.py --all-confirm       # Everyone says yes
     python mock_comms.py --all-decline       # Everyone says no
 
-Requires the FastAPI server to be running (uvicorn main:app --port 8000).
-Also requires Firebase credentials to watch for pending outreach.
+Requires: FastAPI server running + Firebase credentials.
 """
 
 import sys
 import time
 import threading
+import os
 
 import requests
+from dotenv import load_dotenv
 
-# Where the FastAPI server is running
-SERVER_URL = "http://localhost:8000"
+load_dotenv()
 
-# Configurable scenarios
+SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:8000")
+
 SCENARIOS = {
     "default": ["no_answer", "confirmed", "confirmed", "confirmed"],
     "demo": ["no_answer", "declined", "confirmed", "confirmed"],
@@ -34,88 +35,68 @@ SCENARIOS = {
 
 _call_count = 0
 _scenario = SCENARIOS["default"]
-_seen_actions = set()
+_seen = set()
 
 
-def poll_and_handle():
-    """Poll Firestore for pending_action and simulate execution."""
+def watch_patients():
+    """Watch the patients collection for calling/sms_sent status changes."""
     from agent.firestore import init_firestore
-    import os
+
+    service_account_path = os.environ.get(
+        "GOOGLE_APPLICATION_CREDENTIALS", "serviceAccountKey.json"
+    )
+    init_firestore(service_account_path)
+
     import firebase_admin
     from firebase_admin import firestore
 
-    service_account_path = os.environ.get(
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "serviceAccountKey.json",
-    )
-    if not firebase_admin._apps:
-        init_firestore(service_account_path)
-
     db = firestore.client()
-    session_ref = db.collection("sessions").document("current")
 
-    def on_snapshot(doc_snapshot, changes, read_time):
+    def on_snapshot(col_snapshot, changes, read_time):
         global _call_count
-        for doc in doc_snapshot:
-            data = doc.to_dict()
-            if not data:
+        for change in changes:
+            if change.type.name != "MODIFIED":
                 continue
+            doc = change.document
+            data = doc.to_dict()
+            name = data.get("name", "")
+            status = data.get("status", "")
+            phone = data.get("phone", "")
 
-            candidates = data.get("candidates", [])
-            for candidate in candidates:
-                name = candidate.get("name", "")
-                status = candidate.get("status", "")
-                phone = candidate.get("phone", "")
+            if status in ("calling", "sms_sent") and name not in _seen:
+                _seen.add(name)
 
-                # React to "calling" or "texting" status
-                if status in ("calling", "texting") and name not in _seen_actions:
-                    _seen_actions.add(name)
+                result = _scenario[_call_count] if _call_count < len(_scenario) else "no_answer"
+                _call_count += 1
 
-                    # Pick outcome from scenario
-                    if _call_count < len(_scenario):
-                        result = _scenario[_call_count]
+                channel = "voice" if status == "calling" else "sms"
+                delay = 4 if channel == "voice" else 3
+
+                def _handle(n=name, r=result, ch=channel, d=delay, p=phone):
+                    print(f"  [{ch.upper()}] {n} ({p})")
+                    print(f"  Waiting {d}s...")
+                    time.sleep(d)
+
+                    if ch == "voice":
+                        resp = requests.post(
+                            f"{SERVER_URL}/call-outcome",
+                            json={"patient_name": n, "outcome": r},
+                        )
                     else:
-                        result = "no_answer"
-                    _call_count += 1
+                        reply_map = {"confirmed": "YES", "declined": "No thanks", "no_answer": ""}
+                        resp = requests.post(
+                            f"{SERVER_URL}/sms-reply",
+                            json={"patient_name": n, "reply": reply_map.get(r, "No")},
+                        )
 
-                    channel = "voice" if status == "calling" else "sms"
-                    delay = 3 if channel == "voice" else 2
+                    print(f"  → {r} (HTTP {resp.status_code})\n")
 
-                    def _handle(n=name, r=result, ch=channel, d=delay, p=phone):
-                        print(f"  [{ch.upper()}] → {n} ({p})")
-                        print(f"  Simulating {d}s delay...")
-                        time.sleep(d)
+                threading.Thread(target=_handle, daemon=True).start()
 
-                        if ch == "voice":
-                            resp = requests.post(
-                                f"{SERVER_URL}/call-outcome",
-                                json={"patient_name": n, "outcome": r},
-                            )
-                        else:
-                            reply_text = {
-                                "confirmed": "YES",
-                                "declined": "No thanks",
-                                "no_answer": "",
-                            }.get(r, "No")
-                            resp = requests.post(
-                                f"{SERVER_URL}/sms-reply",
-                                json={"patient_name": n, "reply": reply_text},
-                            )
-
-                        print(f"  Result: {r} (server responded {resp.status_code})")
-                        print()
-
-                    thread = threading.Thread(target=_handle, daemon=True)
-                    thread.start()
-
-    session_ref.on_snapshot(on_snapshot)
+    db.collection("patients").on_snapshot(on_snapshot)
 
 
 if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-
-    # Parse scenario from args
     if "--all-confirm" in sys.argv:
         _scenario = SCENARIOS["all_confirm"]
     elif "--all-decline" in sys.argv:
@@ -125,18 +106,12 @@ if __name__ == "__main__":
         if idx + 1 < len(sys.argv):
             name = sys.argv[idx + 1]
             _scenario = SCENARIOS.get(name, SCENARIOS["default"])
-            if name not in SCENARIOS:
-                print(f"Unknown scenario '{name}', using default.")
-                print(f"Available: {', '.join(SCENARIOS.keys())}")
 
-    print("Mock comms layer running. Watching for outreach...")
-    print(f"Scenario: {_scenario}")
-    print(f"Server: {SERVER_URL}")
-    print()
+    print(f"Mock comms | Scenario: {_scenario}")
+    print(f"Server: {SERVER_URL}\n")
 
-    poll_and_handle()
+    watch_patients()
 
-    print("Press Ctrl+C to stop.\n")
     try:
         threading.Event().wait()
     except KeyboardInterrupt:

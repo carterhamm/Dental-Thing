@@ -31,6 +31,7 @@ from agent.firestore import (
     update_candidates,
     update_recovered,
     reset_session,
+    get_patient_by_phone,
 )
 
 __all__ = [
@@ -57,4 +58,5 @@ __all__ = [
     "update_candidates",
     "update_recovered",
     "reset_session",
+    "get_patient_by_phone",
 ]

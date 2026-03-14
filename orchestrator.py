@@ -1,13 +1,13 @@
 """
 Claude Agent orchestrator — Spencer's PM runtime.
 
-This wraps Eddy's deterministic brain functions with Claude's reasoning.
-Claude drives the loop via tool use, calling brain functions for decisions
-and logging its thinking to the activity feed for the judges to see.
+Wraps Eddy's brain functions with Claude's reasoning via tool use.
+Writes to Carter's Firestore schema so the dashboard updates in real-time.
 
-The orchestrator is called by main.py when a cancellation is triggered.
-Outreach outcomes arrive via FastAPI webhook endpoints in main.py,
-which update candidate statuses directly — no Firestore polling needed.
+The orchestrator is event-driven:
+  1. main.py calls start() on cancellation → Claude ranks + initiates first outreach
+  2. Webhook delivers outcome → main.py calls handle_outcome() → Claude decides next step
+  3. Repeat until booked or exhausted
 """
 
 import anthropic
@@ -27,10 +27,6 @@ from agent.firestore import (
 )
 from agent.mock_data import RECALL_LIST
 
-
-# ---------------------------------------------------------------------------
-# Tool definitions for Claude
-# ---------------------------------------------------------------------------
 
 TOOLS = [
     {
@@ -175,7 +171,7 @@ class Orchestrator:
         self.candidates: list[dict] = []
         self.slot: dict = {}
         self.current_index: int = -1
-        # Callback for comms layer — main.py sets this
+        # Comms callbacks — main.py wires these to real Twilio/ElevenLabs
         self.on_voice_call: callable = None
         self.on_sms: callable = None
 
@@ -213,7 +209,6 @@ class Orchestrator:
             self.current_index = idx
             update_candidates(self.candidates)
             add_activity("tool_call", f"Calling {candidate['name']} ({candidate['phone']})...")
-            # Trigger the actual call via comms layer
             if self.on_voice_call:
                 self.on_voice_call(candidate)
             return f"Voice call initiated to {candidate['name']}. Waiting for outcome via webhook."
@@ -225,7 +220,6 @@ class Orchestrator:
             self.current_index = idx
             update_candidates(self.candidates)
             add_activity("sms_sent", f"SMS sent to {candidate['name']} ({candidate['phone']})")
-            # Trigger the actual SMS via comms layer
             if self.on_sms:
                 self.on_sms(candidate, self.slot)
             return f"SMS sent to {candidate['name']}. Waiting for reply via webhook."
@@ -249,18 +243,10 @@ class Orchestrator:
         return f"Unknown tool: {tool_name}"
 
     def run_step(self, user_message: str) -> str:
-        """Run one step of the Claude agent loop.
-
-        Each step: Claude receives context → makes tool calls → returns.
-        Called by main.py on cancellation trigger AND after each webhook outcome.
-
-        Returns the agent's final text response for this step (for logging).
-        """
+        """Run one step of the Claude agent loop."""
         messages = [{"role": "user", "content": user_message}]
 
-        # Let Claude make multiple tool calls in sequence within one step
-        max_turns = 15
-        for _ in range(max_turns):
+        for _ in range(15):
             response = self.client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=1024,
@@ -272,11 +258,9 @@ class Orchestrator:
             messages.append({"role": "assistant", "content": response.content})
 
             if response.stop_reason == "end_turn":
-                # Extract final text
                 text_parts = [b.text for b in response.content if hasattr(b, "text")]
                 return " ".join(text_parts) if text_parts else ""
 
-            # Process tool calls
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
@@ -295,7 +279,7 @@ class Orchestrator:
         return ""
 
     def start(self, slot: dict) -> str:
-        """Start the agent for a cancelled slot. Returns after first outreach is initiated."""
+        """Start the agent for a cancelled slot."""
         self.slot = slot
         self.candidates = []
         self.current_index = -1
@@ -311,12 +295,7 @@ class Orchestrator:
         )
 
     def handle_outcome(self, candidate_name: str, outcome: str) -> str:
-        """Handle a webhook outcome (call result or SMS reply).
-
-        Called by main.py when /call-outcome or /sms-reply is hit.
-        Re-invokes Claude with updated state so it can decide next steps.
-        """
-        # Find the candidate and update status
+        """Handle a webhook outcome. Re-invokes Claude to decide next steps."""
         for i, c in enumerate(self.candidates):
             if c["name"] == candidate_name:
                 self.candidates = update_candidate_status(self.candidates, i, outcome)
@@ -324,7 +303,6 @@ class Orchestrator:
                 update_candidates(self.candidates)
                 break
 
-        # Log the outcome
         outcome_label = {
             "confirmed": "confirmed",
             "declined": "declined",
@@ -334,9 +312,7 @@ class Orchestrator:
         add_activity("call_outcome", f"{candidate_name}: {outcome_label}")
 
         if outcome == "confirmed":
-            return self.run_step(
-                f"{candidate_name} confirmed! Book the appointment."
-            )
+            return self.run_step(f"{candidate_name} confirmed! Book the appointment.")
         else:
             return self.run_step(
                 f"Outcome for {candidate_name}: {outcome_label}. "
