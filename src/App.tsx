@@ -228,7 +228,7 @@ function App() {
       )}
 
       {/* Views */}
-      <main className="flex-1 px-5 pt-4 pb-5 overflow-hidden">
+      <main className="flex-1 px-5 pt-4 pb-5 overflow-auto">
         {view === 'dashboard' && (
           <div className="h-full grid grid-cols-4 gap-4 animate-fadeIn" style={{ gridTemplateRows: '88px 1fr 1fr 180px' }}>
             <StatsBar stats={[
