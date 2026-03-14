@@ -5,20 +5,29 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  background: linear-gradient(160deg, #f2f2f7 0%, #f0f4f8 50%, rgba(125,249,255,0.04) 100%);
-  color: #1d1d1f;
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', 'Helvetica Neue', sans-serif;
+  background: #f0f2f5;
+  color: #1a1a2e;
+  font-family: 'Sora', sans-serif;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
+
+.font-mono { font-family: 'JetBrains Mono', monospace; }
 
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
 
 @keyframes shimmer {
-  0% { opacity: 0.5; }
+  0% { opacity: 0.4; }
   50% { opacity: 1; }
-  100% { opacity: 0.5; }
+  100% { opacity: 0.4; }
 }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .animate-shimmer { animation: shimmer 2s ease-in-out infinite; }
+.animate-fadeIn { animation: fadeIn 0.3s ease-out forwards; }

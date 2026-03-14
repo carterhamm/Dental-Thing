@@ -13,8 +13,9 @@ import type { SessionData } from './lib/firestore';
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 
-// --- Mapping helpers: sessions/current → UI components ---
+type View = 'dashboard' | 'patients' | 'activity' | 'settings';
 
+// --- Mapping helpers ---
 function mapSlotStatus(s?: string): 'open' | 'booking' | 'filled' {
   if (s === 'filled') return 'filled';
   if (s === 'filling') return 'booking';
@@ -22,69 +23,50 @@ function mapSlotStatus(s?: string): 'open' | 'booking' | 'filled' {
 }
 
 function mapCandidateStatus(s: string): Patient['status'] {
-  switch (s) {
-    case 'calling': return 'calling';
-    case 'texting': return 'sms_sent';
-    case 'no_answer': return 'no_answer';
-    case 'declined': case 'no_reply': return 'skipped';
-    case 'confirmed': return 'confirmed';
-    default: return 'queued';
-  }
+  const m: Record<string, Patient['status']> = {
+    calling: 'calling', texting: 'sms_sent', no_answer: 'no_answer',
+    declined: 'skipped', no_reply: 'skipped', confirmed: 'confirmed',
+  };
+  return m[s] || 'queued';
 }
 
 function derivePhase(data: SessionData): AgentPhase {
   if (data.agent_status === 'complete' || data.slot?.status === 'filled') return 'filled';
   if (data.agent_status !== 'running') return 'idle';
-  const active = (data.candidates || []).find(c => c.status === 'calling' || c.status === 'texting');
-  if (active?.status === 'calling') return 'calling';
-  if (active?.status === 'texting') return 'sms_sent';
-  if ((data.candidates || []).some(c => c.status === 'confirmed')) return 'filled';
+  const c = data.candidates || [];
+  const a = c.find(x => x.status === 'calling' || x.status === 'texting');
+  if (a?.status === 'calling') return 'calling';
+  if (a?.status === 'texting') return 'sms_sent';
+  if (c.some(x => x.status === 'confirmed')) return 'filled';
   return 'calling';
 }
 
-function getActivityIcon(type: string): string {
-  if (type === 'call_outcome') return '📞';
-  if (type === 'sms_sent') return '💬';
-  if (type === 'success') return '✅';
-  if (type === 'error') return '❌';
-  if (type === 'thinking') return '🧠';
-  if (type === 'tool_call') return '⚙️';
-  return '📋';
+function actIcon(t: string) {
+  return { call_outcome: '📞', sms_sent: '💬', success: '✅', error: '❌', thinking: '🧠', tool_call: '⚙️' }[t] || '📋';
 }
 
-function getActivityType(type: string): LogEntry['type'] {
-  if (type === 'call_outcome') return 'call';
-  if (type === 'sms_sent') return 'sms';
-  if (type === 'success') return 'success';
-  if (type === 'error') return 'warning';
-  return 'system';
+function actType(t: string): LogEntry['type'] {
+  return { call_outcome: 'call' as const, sms_sent: 'sms' as const, success: 'success' as const, error: 'warning' as const }[t] || 'system';
 }
 
-function formatTs(ts: string): string {
-  try {
-    const d = new Date(ts);
-    const h = d.getHours();
-    const m = d.getMinutes().toString().padStart(2, '0');
-    return `${h > 12 ? h - 12 : h}:${m} ${h >= 12 ? 'PM' : 'AM'}`;
-  } catch {
-    return '';
-  }
+function fmtTs(ts: string) {
+  try { const d = new Date(ts); const h = d.getHours(); return `${h > 12 ? h - 12 : h}:${d.getMinutes().toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`; }
+  catch { return ''; }
 }
 
 function now() {
-  const d = new Date();
-  const h = d.getHours();
-  const m = d.getMinutes().toString().padStart(2, '0');
+  const d = new Date(), h = d.getHours(), m = d.getMinutes().toString().padStart(2, '0');
   return `${h > 12 ? h - 12 : h}:${m} ${h >= 12 ? 'PM' : 'AM'}`;
 }
 
-// Stat icons
+// SVG icons for stats
 const CheckIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 8.5L7 11.5L12 5" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 const DollarIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v12M5 5.5c0-1.1.9-2 2-2h2.5c1.1 0 2 .9 2 2s-.9 2-2 2H6.5c-1.1 0-2 .9-2 2s.9 2 2 2H11" stroke="#6b7280" strokeWidth="1.5" strokeLinecap="round"/></svg>;
 const PhoneIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 3.5C3 2.67 3.67 2 4.5 2H6l1.5 3-1.25.88a7 7 0 003.87 3.87L11 8.5l3 1.5v1.5c0 .83-.67 1.5-1.5 1.5A10.5 10.5 0 013 3.5z" stroke="#0097A7" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-const MessageIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4c0-.55.45-1 1-1h10c.55 0 1 .45 1 1v7c0 .55-.45 1-1 1H5l-3 3V4z" stroke="#9333ea" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+const MsgIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4c0-.55.45-1 1-1h10c.55 0 1 .45 1 1v7c0 .55-.45 1-1 1H5l-3 3V4z" stroke="#9333ea" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 
 function App() {
+  const [view, setView] = useState<View>('dashboard');
   const [phase, setPhase] = useState<AgentPhase>('idle');
   const [patients, setPatients] = useState<Patient[]>([]);
   const [log, setLog] = useState<LogEntry[]>([]);
@@ -99,55 +81,37 @@ function App() {
   const [attempt, setAttempt] = useState(0);
   const [totalPatients, setTotalPatients] = useState(0);
   const [triggering, setTriggering] = useState(false);
+  const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
 
-  // Listen to sessions/current — single source of truth from backend
+  const showToast = useCallback((msg: string, type: 'ok' | 'err' = 'ok') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  // Firestore listener
   useEffect(() => {
     const unsub = onSessionChange((data) => {
       if (!data) return;
-
-      // Slot
       setSlotStatus(mapSlotStatus(data.slot?.status));
       setSlotTime(data.slot?.time || '—');
       setSlotFilledBy(data.slot?.filled_by || undefined);
-
-      // Agent phase
       setPhase(derivePhase(data));
       setRecovered(data.recovered || 0);
-
-      // Candidates → patients
-      const candidates = data.candidates || [];
-      setTotalPatients(candidates.length);
-      setPatients(candidates.map(c => ({
-        name: c.name,
-        phone: c.phone,
-        lastCleaning: `${c.days_overdue}d overdue`,
-        status: mapCandidateStatus(c.status),
+      const c = data.candidates || [];
+      setTotalPatients(c.length);
+      setPatients(c.map(x => ({
+        name: x.name, phone: x.phone,
+        lastCleaning: `${x.days_overdue}d overdue`,
+        status: mapCandidateStatus(x.status),
       })));
-
-      // Derive current patient + attempt
-      const activeIdx = candidates.findIndex(c => c.status === 'calling' || c.status === 'texting');
-      if (activeIdx >= 0) {
-        setCurrentPatient(candidates[activeIdx].name);
-        setAttempt(activeIdx + 1);
-      } else {
-        const lastTouched = candidates.findIndex(c => c.status !== 'waiting');
-        setAttempt(lastTouched >= 0 ? lastTouched + 1 : 0);
-        setCurrentPatient(lastTouched >= 0 ? candidates[lastTouched].name : '');
-      }
-
-      // Stats from candidates
-      setCallCount(candidates.filter(c => c.status !== 'waiting').length);
-      setSmsCount(candidates.filter(c => ['texting', 'no_reply'].includes(c.status)).length);
-      setFilledCount(candidates.filter(c => c.status === 'confirmed').length);
-
-      // Activity → log
-      const activities = data.activity || [];
-      setLog([...activities].reverse().map(a => ({
-        time: formatTs(a.timestamp),
-        icon: getActivityIcon(a.type),
-        message: a.text,
-        type: getActivityType(a.type),
-      })));
+      const ai = c.findIndex(x => x.status === 'calling' || x.status === 'texting');
+      if (ai >= 0) { setCurrentPatient(c[ai].name); setAttempt(ai + 1); }
+      else { const lt = c.findIndex(x => x.status !== 'waiting'); setAttempt(lt >= 0 ? lt + 1 : 0); setCurrentPatient(lt >= 0 ? c[lt].name : ''); }
+      setCallCount(c.filter(x => x.status !== 'waiting').length);
+      setSmsCount(c.filter(x => ['texting', 'no_reply'].includes(x.status)).length);
+      setFilledCount(c.filter(x => x.status === 'confirmed').length);
+      const acts = data.activity || [];
+      setLog([...acts].reverse().map(a => ({ time: fmtTs(a.timestamp), icon: actIcon(a.type), message: a.text, type: actType(a.type) })));
     });
     return () => unsub();
   }, []);
@@ -155,84 +119,154 @@ function App() {
   const triggerCancellation = useCallback(async () => {
     setTriggering(true);
     try {
-      await fetch(`${BACKEND}/cancellation`, { method: 'POST' });
-    } catch (e) {
-      console.error('Failed to trigger cancellation:', e);
+      const res = await fetch(`${BACKEND}/cancellation`, { method: 'POST' });
+      if (res.ok) { showToast('Agent started — filling cancellation slot', 'ok'); }
+      else { showToast(`Backend error: ${res.status}`, 'err'); }
+    } catch {
+      showToast(`Cannot reach backend at ${BACKEND}`, 'err');
     } finally {
       setTimeout(() => setTriggering(false), 2000);
     }
-  }, []);
+  }, [showToast]);
 
   const handleMenuAction = useCallback(async (action: string) => {
     if (action === 'seed') {
-      try {
-        await seedSessionData();
-      } catch (e) {
-        console.error('Failed to seed:', e);
-      }
+      try { await seedSessionData(); showToast('Session data seeded to Firestore', 'ok'); }
+      catch { showToast('Failed to seed — check Firebase console', 'err'); }
     }
     if (action === 'reset') {
       try { await fetch(`${BACKEND}/reset`, { method: 'POST' }); } catch {}
-      try { await seedSessionData(); } catch {}
+      try { await seedSessionData(); showToast('Agent reset', 'ok'); } catch {}
     }
-  }, []);
+  }, [showToast]);
 
   const [clock, setClock] = useState(now());
-  useEffect(() => {
-    const id = setInterval(() => setClock(now()), 10000);
-    return () => clearInterval(id);
-  }, []);
+  useEffect(() => { const id = setInterval(() => setClock(now()), 10000); return () => clearInterval(id); }, []);
 
   return (
-    <div className="h-screen flex flex-col" style={{ background: 'linear-gradient(160deg, #f2f2f7 0%, #f0f4f8 50%, rgba(125,249,255,0.04) 100%)' }}>
+    <div className="h-screen flex flex-col bg-[#f0f2f5]">
       {/* Header */}
-      <header className="flex items-center justify-between px-6 h-14 shrink-0 bg-white/80 backdrop-blur-xl relative z-10"
-        style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
-        <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-gradient-to-r from-[#7DF9FF] via-[#7DF9FF]/40 to-transparent" />
+      <header className="flex items-center justify-between px-6 h-14 shrink-0 bg-white/90 backdrop-blur-xl relative z-10"
+        style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+        <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-gradient-to-r from-[#7DF9FF] via-[#7DF9FF]/30 to-transparent" />
         <div className="flex items-center gap-4">
-          <MenuPill onAction={handleMenuAction} />
-          <div className="flex items-baseline gap-2">
-            <span className="text-[16px] font-bold text-gray-900 tracking-tight">DentAI</span>
+          <MenuPill onAction={handleMenuAction} onNavigate={(v) => setView(v as View)} activeView={view} />
+          <div className="flex items-baseline gap-2.5">
+            <span className="text-[16px] font-bold text-gray-900 tracking-tight" style={{ fontFamily: "'Sora', sans-serif" }}>DentAI</span>
             <span className="text-[11px] text-gray-400 font-medium hidden sm:inline">Cancellation Recovery</span>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={triggerCancellation}
-            disabled={triggering || phase !== 'idle'}
+          <button onClick={triggerCancellation} disabled={triggering || phase !== 'idle'}
             className={`text-[11px] font-semibold px-4 py-1.5 rounded-full transition-all ${
               triggering || phase !== 'idle'
                 ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                 : 'bg-[#7DF9FF] text-gray-900 hover:bg-[#5CE8F0] cursor-pointer'
             }`}
-            style={phase === 'idle' && !triggering ? { boxShadow: '0 2px 8px rgba(125,249,255,0.4)' } : undefined}
-          >
+            style={phase === 'idle' && !triggering ? { boxShadow: '0 2px 8px rgba(125,249,255,0.4)' } : undefined}>
             {triggering ? 'Starting...' : 'Trigger Cancellation'}
           </button>
-          <span className="text-[13px] text-gray-300 tabular-nums font-medium">{clock}</span>
+          <span className="text-[12px] text-gray-300 font-mono tabular-nums">{clock}</span>
         </div>
       </header>
 
-      {/* Main Grid */}
-      <main className="flex-1 px-5 pt-4 pb-5 overflow-hidden">
-        <div className="h-full grid grid-cols-4 gap-4" style={{ gridTemplateRows: '80px 200px 1fr' }}>
-          <StatsBar stats={[
-            { label: 'Filled', value: filledCount, accent: 'green', icon: <CheckIcon /> },
-            { label: 'Recovered', value: `$${recovered}`, accent: 'gray', icon: <DollarIcon /> },
-            { label: 'Calls', value: callCount, accent: 'cyan', icon: <PhoneIcon /> },
-            { label: 'Texts', value: smsCount, accent: 'purple', icon: <MessageIcon /> },
-          ]} />
-
-          <div className="col-span-2">
-            <CancellationSlot status={slotStatus} bookedBy={slotFilledBy} slotTime={slotTime} />
-          </div>
-          <div className="col-span-2">
-            <AgentStatus phase={phase} currentPatient={currentPatient} attempt={attempt} totalPatients={totalPatients} />
-          </div>
-
-          <div className="col-span-2"><PatientQueue patients={patients} /></div>
-          <div className="col-span-2"><ActivityLog entries={log} /></div>
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 animate-fadeIn">
+          <div className={`px-4 py-2 rounded-xl text-[12px] font-medium shadow-lg backdrop-blur-sm ${
+            toast.type === 'ok' ? 'bg-[#7DF9FF]/90 text-gray-900' : 'bg-red-500/90 text-white'
+          }`}>{toast.msg}</div>
         </div>
+      )}
+
+      {/* Views */}
+      <main className="flex-1 px-5 pt-4 pb-5 overflow-hidden">
+        {view === 'dashboard' && (
+          <div className="h-full grid grid-cols-4 gap-4 animate-fadeIn" style={{ gridTemplateRows: '88px minmax(240px, 1fr) minmax(0, 2fr)' }}>
+            <StatsBar stats={[
+              { label: 'Filled', value: filledCount, accent: 'green', icon: <CheckIcon /> },
+              { label: 'Recovered', value: `$${recovered}`, accent: 'gray', icon: <DollarIcon /> },
+              { label: 'Calls', value: callCount, accent: 'cyan', icon: <PhoneIcon /> },
+              { label: 'Texts', value: smsCount, accent: 'purple', icon: <MsgIcon /> },
+            ]} />
+            <div className="col-span-2"><CancellationSlot status={slotStatus} bookedBy={slotFilledBy} slotTime={slotTime} /></div>
+            <div className="col-span-2"><AgentStatus phase={phase} currentPatient={currentPatient} attempt={attempt} totalPatients={totalPatients} /></div>
+            <div className="col-span-2"><PatientQueue patients={patients} /></div>
+            <div className="col-span-2"><ActivityLog entries={log} /></div>
+          </div>
+        )}
+
+        {view === 'patients' && (
+          <div className="h-full animate-fadeIn">
+            <div className="flex items-center justify-between mb-4">
+              <h1 className="text-xl font-bold text-gray-900">Patient Queue</h1>
+              <span className="text-[12px] text-gray-400 font-mono">{patients.length} patients</span>
+            </div>
+            <div className="h-[calc(100%-48px)]"><PatientQueue patients={patients} /></div>
+          </div>
+        )}
+
+        {view === 'activity' && (
+          <div className="h-full animate-fadeIn">
+            <div className="flex items-center justify-between mb-4">
+              <h1 className="text-xl font-bold text-gray-900">Activity Log</h1>
+              <span className="text-[12px] text-gray-400 font-mono">{log.length} events</span>
+            </div>
+            <div className="h-[calc(100%-48px)]"><ActivityLog entries={log} /></div>
+          </div>
+        )}
+
+        {view === 'settings' && (
+          <div className="max-w-2xl mx-auto pt-8 animate-fadeIn space-y-6">
+            <h1 className="text-xl font-bold text-gray-900 mb-6">Settings</h1>
+
+            <div className="bg-white rounded-2xl p-6" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
+              <h2 className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase mb-4">Backend</h2>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[12px] text-gray-500 font-medium">API URL</label>
+                  <div className="mt-1 px-3 py-2 rounded-lg bg-gray-50 border border-gray-200 text-[13px] font-mono text-gray-700">{BACKEND}</div>
+                </div>
+                <p className="text-[11px] text-gray-400">Set <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">VITE_BACKEND_URL</code> in your <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">.env</code> file.</p>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-6" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
+              <h2 className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase mb-4">Twilio Webhook</h2>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[12px] text-gray-500 font-medium">Messaging Webhook URL</label>
+                  <div className="mt-1 px-3 py-2 rounded-lg bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[13px] font-mono text-[#0097A7]">
+                    {BACKEND}/webhooks/twilio-sms
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[12px] text-gray-500 font-medium">Voice Call Outcome Webhook</label>
+                  <div className="mt-1 px-3 py-2 rounded-lg bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[13px] font-mono text-[#0097A7]">
+                    {BACKEND}/call-outcome
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  Twilio Console → Phone Numbers → (385) 300-0856 → Messaging → "A message comes in" → paste the webhook URL above. Method: POST.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-6" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
+              <h2 className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase mb-4">Quick Actions</h2>
+              <div className="flex gap-3">
+                <button onClick={() => handleMenuAction('seed')}
+                  className="px-4 py-2 rounded-xl bg-[#7DF9FF]/10 border border-[#7DF9FF]/20 text-[12px] font-semibold text-[#0097A7] hover:bg-[#7DF9FF]/20 transition-colors cursor-pointer">
+                  Seed Data
+                </button>
+                <button onClick={() => handleMenuAction('reset')}
+                  className="px-4 py-2 rounded-xl bg-red-50 border border-red-100 text-[12px] font-semibold text-red-500 hover:bg-red-100 transition-colors cursor-pointer">
+                  Reset Agent
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

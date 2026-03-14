@@ -1,36 +1,41 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  morphPath,
-  createSprings,
-  tickSprings,
-  readState,
+  morphPath, createSprings, tickSprings, readState,
 } from './animationEngine';
 import type { MorphTarget, MorphState, AnimSprings } from './animationEngine';
 
 type MenuItem =
-  | { label: string; action?: string; accent?: boolean; danger?: boolean }
+  | { label: string; view?: string; action?: string; accent?: boolean; danger?: boolean }
   | { sep: true };
 
 const NAV_ITEMS: MenuItem[] = [
-  { label: 'Dashboard' },
+  { label: 'Dashboard', view: 'dashboard' },
   { sep: true },
-  { label: 'Patients' },
-  { label: 'Activity Log' },
+  { label: 'Patients', view: 'patients' },
+  { label: 'Activity Log', view: 'activity' },
   { sep: true },
   { label: 'Seed Data', action: 'seed', accent: true },
   { label: 'Reset Agent', action: 'reset', danger: true },
-  { label: 'Settings' },
+  { sep: true },
+  { label: 'Settings', view: 'settings' },
 ];
 
-const PILL_W = 44, PILL_H = 36;
-const MENU_W = 200, MENU_H = 230, MENU_R = 16;
+// Dynamic sizing
+const PILL_W = 44, PILL_H = 40;
+const MENU_W = 210, MENU_R = 16;
+const ITEM_H = 40;
+const SEP_H = 9;
+const PAD = 16;
+const MENU_H = NAV_ITEMS.reduce((h, item) => h + ('sep' in item ? SEP_H : ITEM_H), PAD);
 
 interface Props {
   onAction?: (action: string) => void;
+  onNavigate?: (view: string) => void;
+  activeView?: string;
 }
 
-export function MenuPill({ onAction }: Props) {
+export function MenuPill({ onAction, onNavigate, activeView }: Props) {
   const pathRef = useRef<SVGPathElement>(null);
   const glowRef = useRef<SVGPathElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -40,40 +45,24 @@ export function MenuPill({ onAction }: Props) {
   const springsRef = useRef<AnimSprings | null>(null);
   const targetRef = useRef<MorphTarget | null>(null);
   const menuBouncedRef = useRef(false);
-
   const [pillHidden, setPillHidden] = useState(false);
   const [overlayActive, setOverlayActive] = useState(false);
 
   const apply = useCallback((s: MorphState) => {
-    const path = pathRef.current;
-    const glow = glowRef.current;
-    const menu = menuRef.current;
+    const path = pathRef.current, glow = glowRef.current, menu = menuRef.current;
     if (!path || !glow || !menu) return;
-
     const d = morphPath(s.cx, s.cy, s.width, s.height, s.cornerRadius);
     path.setAttribute('d', d);
     glow.setAttribute('d', d);
     path.removeAttribute('transform');
     glow.removeAttribute('transform');
     glow.setAttribute('opacity', '0');
-    path.style.filter = 'drop-shadow(0 2px 12px rgba(0,0,0,0.12))';
-
-    const top = s.cy - s.height / 2;
-    const left = s.cx - s.width / 2;
-    menu.style.cssText = `
-      position:fixed;
-      top:${top}px; left:${left}px;
-      width:${s.width}px; height:${s.height}px;
-      opacity:${s.contentOpacity};
-      border-radius:${s.cornerRadius}px;
-      overflow:hidden;
-      pointer-events:${s.contentOpacity > 0.5 ? 'all' : 'none'};
-    `;
+    path.style.filter = 'drop-shadow(0 4px 24px rgba(0,0,0,0.12))';
+    menu.style.cssText = `position:fixed;top:${s.cy - s.height / 2}px;left:${s.cx - s.width / 2}px;width:${s.width}px;height:${s.height}px;opacity:${s.contentOpacity};border-radius:${s.cornerRadius}px;overflow:hidden;pointer-events:${s.contentOpacity > 0.5 ? 'all' : 'none'};`;
   }, []);
 
   const loop = useCallback((now: number) => {
-    const springs = springsRef.current;
-    const target = targetRef.current;
+    const springs = springsRef.current, target = targetRef.current;
     if (!springs || !target) return;
     const dt = Math.min((now - lastTimeRef.current) / 1000, 0.033);
     lastTimeRef.current = now;
@@ -84,16 +73,11 @@ export function MenuPill({ onAction }: Props) {
       glowRef.current?.setAttribute('d', '');
       if (menuRef.current) menuRef.current.style.opacity = '0';
       if (pillRef.current) { pillRef.current.style.opacity = '1'; pillRef.current.style.pointerEvents = 'auto'; }
-      setPillHidden(false);
-      setOverlayActive(false);
-      springsRef.current = null;
+      setPillHidden(false); setOverlayActive(false); springsRef.current = null;
       pillRef.current?.animate([
-        { transform: 'scale(0.88)', offset: 0 },
-        { transform: 'scale(1.1)', offset: 0.4 },
-        { transform: 'scale(0.96)', offset: 0.7 },
-        { transform: 'scale(1.02)', offset: 0.88 },
-        { transform: 'scale(1)', offset: 1 },
-      ], { duration: 400, easing: 'ease-out' });
+        { transform: 'scale(0.88)', offset: 0 }, { transform: 'scale(1.08)', offset: 0.4 },
+        { transform: 'scale(0.97)', offset: 0.7 }, { transform: 'scale(1)', offset: 1 },
+      ], { duration: 350, easing: 'ease-out' });
       return;
     }
     const state = readState(springs, target);
@@ -101,11 +85,9 @@ export function MenuPill({ onAction }: Props) {
     if (springs.direction === 'forward' && !menuBouncedRef.current && springs.shape.v > 0.85) {
       menuBouncedRef.current = true;
       menuRef.current?.animate([
-        { transform: 'scale(0.97)', offset: 0 },
-        { transform: 'scale(1.025)', offset: 0.4 },
-        { transform: 'scale(0.995)', offset: 0.7 },
-        { transform: 'scale(1)', offset: 1 },
-      ], { duration: 350, easing: 'ease-out' });
+        { transform: 'scale(0.97)', offset: 0 }, { transform: 'scale(1.02)', offset: 0.4 },
+        { transform: 'scale(0.995)', offset: 0.7 }, { transform: 'scale(1)', offset: 1 },
+      ], { duration: 300, easing: 'ease-out' });
     }
     if (finished) { springsRef.current = null; return; }
     rafRef.current = requestAnimationFrame(loop);
@@ -123,10 +105,8 @@ export function MenuPill({ onAction }: Props) {
 
   const open = useCallback(() => {
     if (springsRef.current) return;
-    const target = getTarget();
-    targetRef.current = target;
-    setPillHidden(true); setOverlayActive(true);
-    menuBouncedRef.current = false;
+    const target = getTarget(); targetRef.current = target;
+    setPillHidden(true); setOverlayActive(true); menuBouncedRef.current = false;
     cancelAnimationFrame(rafRef.current);
     springsRef.current = createSprings(target, 'forward');
     lastTimeRef.current = performance.now();
@@ -135,8 +115,7 @@ export function MenuPill({ onAction }: Props) {
 
   const close = useCallback(() => {
     if (springsRef.current?.direction === 'reverse') return;
-    const target = targetRef.current ?? getTarget();
-    targetRef.current = target;
+    const target = targetRef.current ?? getTarget(); targetRef.current = target;
     cancelAnimationFrame(rafRef.current);
     springsRef.current = createSprings(target, 'reverse');
     lastTimeRef.current = performance.now();
@@ -160,31 +139,39 @@ export function MenuPill({ onAction }: Props) {
 
   const handleItemClick = useCallback((item: MenuItem) => {
     if ('action' in item && item.action && onAction) onAction(item.action);
+    if ('view' in item && item.view && onNavigate) onNavigate(item.view);
     close();
-  }, [close, onAction]);
+  }, [close, onAction, onNavigate]);
 
   const overlay = (
-    <div
-      onClick={overlayActive ? onOverlayClick : undefined}
-      style={{ position: 'fixed', inset: 0, zIndex: 100, pointerEvents: overlayActive ? 'all' : 'none' }}
-    >
+    <div onClick={overlayActive ? onOverlayClick : undefined}
+      style={{ position: 'fixed', inset: 0, zIndex: 100, pointerEvents: overlayActive ? 'all' : 'none' }}>
       <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0 }}>
-        <path ref={glowRef} fill="none" stroke="rgba(0,0,0,0.06)" strokeWidth="12" opacity="0" style={{ filter: 'blur(8px)' }} />
-        <path ref={pathRef} fill="rgba(255,255,255,0.98)" stroke="rgba(0,0,0,0.06)" strokeWidth="0.5" style={{ filter: 'drop-shadow(0 4px 24px rgba(0,0,0,0.12))' }} />
+        <path ref={glowRef} fill="none" stroke="rgba(125,249,255,0.15)" strokeWidth="16" opacity="0" style={{ filter: 'blur(12px)' }} />
+        <path ref={pathRef} fill="rgba(255,255,255,0.98)" stroke="rgba(0,0,0,0.06)" strokeWidth="0.5"
+          style={{ filter: 'drop-shadow(0 4px 24px rgba(0,0,0,0.12))' }} />
       </svg>
       <div ref={menuRef} style={{ position: 'fixed', opacity: 0, overflow: 'hidden', pointerEvents: 'none', borderRadius: MENU_R }}>
         <div style={{ padding: '8px' }}>
           {NAV_ITEMS.map((item, i) => {
             if ('sep' in item) return <div key={i} style={{ height: 1, margin: '4px 12px', background: 'rgba(0,0,0,0.06)' }} />;
+            const isActive = 'view' in item && item.view === activeView;
             return (
               <div key={i} onClick={() => handleItemClick(item)} style={{
-                display: 'flex', alignItems: 'center', padding: '10px 14px', cursor: 'pointer',
-                color: item.danger ? '#ef4444' : item.accent ? '#0097A7' : '#1d1d1f',
-                fontSize: 13.5, fontWeight: 500, borderRadius: 10, margin: '1px 0',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '10px 14px', cursor: 'pointer',
+                color: item.danger ? '#ef4444' : item.accent ? '#0097A7' : '#1a1a2e',
+                fontSize: 13, fontWeight: isActive ? 700 : 500,
+                borderRadius: 10, margin: '1px 0',
+                background: isActive ? 'rgba(125,249,255,0.08)' : 'transparent',
+                fontFamily: "'Sora', sans-serif",
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-              >{item.label}</div>
+              onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'rgba(0,0,0,0.04)'; }}
+              onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <span>{item.label}</span>
+                {isActive && <div style={{ width: 6, height: 6, borderRadius: 3, background: '#7DF9FF' }} />}
+              </div>
             );
           })}
         </div>
@@ -204,10 +191,10 @@ export function MenuPill({ onAction }: Props) {
       onMouseEnter={e => (e.currentTarget.style.background = 'rgba(0,0,0,0.06)')}
       onMouseLeave={e => (e.currentTarget.style.background = 'rgba(0,0,0,0.03)')}
       >
-        <svg width="14" height="10" viewBox="0 0 14 10" fill="none">
-          <rect y="0" width="14" height="1.5" rx="0.75" fill="rgba(0,0,0,0.5)"/>
-          <rect y="4.25" width="14" height="1.5" rx="0.75" fill="rgba(0,0,0,0.5)"/>
-          <rect y="8.5" width="14" height="1.5" rx="0.75" fill="rgba(0,0,0,0.5)"/>
+        <svg width="15" height="11" viewBox="0 0 15 11" fill="none">
+          <rect y="0" width="15" height="2" rx="1" fill="rgba(0,0,0,0.5)"/>
+          <rect y="4.5" width="15" height="2" rx="1" fill="rgba(0,0,0,0.5)"/>
+          <rect y="9" width="15" height="2" rx="1" fill="rgba(0,0,0,0.5)"/>
         </svg>
       </button>
       {createPortal(overlay, document.body)}
