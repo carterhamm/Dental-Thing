@@ -56,16 +56,13 @@ RECALL_LIST = [
     },
     {
         "name": "Eddy Kim",
-        "phone": "+10000000000",  # TODO: update with Eddy's real number
+        "phone": "+13852926330",
         "treatment_needed": "cleaning",
         "cycles_overdue": 3,
         "reliability_score": 0.95,
         "preferred_time_of_day": "afternoon",
         "pending_treatment": False,
     },
-<<<<<<< HEAD
-    # --- Other cleaning patients ---
-=======
     {
         "name": "Spencer Hammond",
         "phone": "+17195053575",
@@ -76,8 +73,7 @@ RECALL_LIST = [
         "preferred_time_of_day": "afternoon",
         "pending_treatment": False,
     },
-    # --- High priority cleaning patients ---
->>>>>>> origin/carter
+    # --- Other cleaning patients ---
     {
         "name": "Sarah Kim",
         "phone": "+1-801-555-0101",
