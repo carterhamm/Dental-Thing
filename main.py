@@ -233,6 +233,7 @@ TWILIO_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE = os.environ.get("TWILIO_PHONE_NUMBER", "")  # voice calls
 TWILIO_SMS_PHONE = os.environ.get("TWILIO_SMS_NUMBER", "") or TWILIO_PHONE  # toll-free for SMS
+TWILIO_MESSAGING_SERVICE_SID = os.environ.get("TWILIO_MESSAGING_SERVICE_SID", "")
 
 # Phone-to-patient lookup (populated when we send SMS)
 _phone_to_patient: dict[str, str] = {}
@@ -260,11 +261,32 @@ def send_sms(patient: dict, slot: dict):
         f"{slot.get('treatment', 'cleaning')}. Would you like to book it? "
         f"Reply YES or NO."
     )
-    msg = client.messages.create(
-        body=body,
-        from_=TWILIO_SMS_PHONE,
-        to=patient["phone"],
-    )
+    # Try messaging service first, fall back to direct number
+    try:
+        if TWILIO_MESSAGING_SERVICE_SID:
+            msg = client.messages.create(
+                body=body,
+                messaging_service_sid=TWILIO_MESSAGING_SERVICE_SID,
+                to=patient["phone"],
+            )
+        else:
+            msg = client.messages.create(
+                body=body,
+                from_=TWILIO_SMS_PHONE,
+                to=patient["phone"],
+            )
+    except Exception as sms_err:
+        print(f"[TWILIO] SMS error: {sms_err}")
+        # Try the local number as last resort
+        try:
+            msg = client.messages.create(
+                body=body,
+                from_=TWILIO_PHONE,
+                to=patient["phone"],
+            )
+        except Exception as e2:
+            print(f"[TWILIO] All SMS attempts failed: {e2}")
+            return
     # Track phone→patient mapping so we can match inbound replies
     # Store both raw and E.164 format for matching
     _phone_to_patient[patient["phone"]] = patient["name"]
