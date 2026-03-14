@@ -262,44 +262,54 @@ async def twilio_sms_webhook(request: Request):
     Configure in Twilio Console:
       Phone Numbers → your number → Messaging →
       'A MESSAGE COMES IN' → Webhook URL:
-      https://<your-backend>/webhooks/twilio-sms  (POST)
+      https://dental-agent-production.up.railway.app/webhooks/twilio-sms  (POST)
     """
-    from starlette.requests import Request as _  # already imported
     form = await request.form()
-    from_number = form.get("From", "")
-    body_text = form.get("Body", "")
+    from_number = str(form.get("From", ""))
+    body_text = str(form.get("Body", ""))
 
-    # Look up patient by phone number
+    print(f"[TWILIO INBOUND] From={from_number} Body='{body_text}'")
+
+    # Look up patient by phone number — check in-memory map first
     patient_name = _phone_to_patient.get(from_number, "")
+
+    # Fuzzy match: strip formatting and compare last 10 digits
     if not patient_name:
-        # Try without +1 prefix
-        stripped = from_number.lstrip("+1")
+        from_digits = ''.join(c for c in from_number if c.isdigit())[-10:]
         for phone, name in _phone_to_patient.items():
-            if phone.replace("-", "").replace(" ", "").replace("(", "").replace(")", "").endswith(stripped[-10:]):
+            phone_digits = ''.join(c for c in phone if c.isdigit())[-10:]
+            if from_digits == phone_digits:
                 patient_name = name
                 break
 
-    if not patient_name:
-        print(f"[TWILIO] Unknown sender: {from_number} said '{body_text}'")
-        return {"status": "unknown_sender"}
+    # If still no match, check orchestrator's candidates directly
+    if not patient_name and _orchestrator and _orchestrator.candidates:
+        from_digits = ''.join(c for c in from_number if c.isdigit())[-10:]
+        for c in _orchestrator.candidates:
+            c_digits = ''.join(ch for ch in c.get("phone", "") if ch.isdigit())[-10:]
+            if from_digits == c_digits:
+                patient_name = c["name"]
+                _phone_to_patient[from_number] = patient_name
+                break
 
-    # Forward to the existing /sms-reply logic
+    # Parse yes/no
     reply_lower = body_text.lower().strip()
-    if reply_lower in ("yes", "y", "yeah", "sure", "ok", "okay", "yep", "absolutely"):
+    if reply_lower in ("yes", "y", "yeah", "sure", "ok", "okay", "yep", "absolutely", "yes please", "yea"):
         new_status = "confirmed"
-    elif reply_lower in ("no", "n", "nope", "can't", "cannot", "no thanks"):
+    elif reply_lower in ("no", "n", "nope", "can't", "cannot", "no thanks", "no thank you"):
         new_status = "declined"
     else:
         new_status = "declined"
 
-    if _is_running:
+    if patient_name and _is_running:
+        print(f"[TWILIO] Matched: {patient_name} → {new_status}")
         asyncio.create_task(handle_outcome_async(patient_name, new_status))
+    elif not patient_name:
+        print(f"[TWILIO] Could not match sender {from_number} to any patient")
 
-    # Twilio expects TwiML response
-    return Response(
-        content='<Response></Response>',
-        media_type="application/xml",
-    )
+    # Twilio expects TwiML — send acknowledgment
+    twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+    return Response(content=twiml, media_type="application/xml")
 
 
 # --- ElevenLabs Voice Calls ---
