@@ -20,6 +20,7 @@ RECALL_LIST = [
     {
         "name": "Carter Hammond",
         "phone": "+17192136213",
+        "dob": "January 25, 2000",
         "treatment_needed": "cleaning",
         "cycles_overdue": 2,
         "reliability_score": 0.95,

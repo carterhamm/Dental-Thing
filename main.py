@@ -376,6 +376,7 @@ def trigger_voice_call(patient: dict):
             "to_number": patient["phone"],
             "conversation_initiation_client_data": {
                 "patient_name": patient["name"],
+                "patient_dob": patient.get("dob", "on file"),
                 "slot_time": slot.get("time", "today"),
                 "slot_treatment": slot.get("treatment", "cleaning"),
                 "slot_date": slot.get("date", "Today"),
