@@ -33,7 +33,7 @@ export interface CandidateData {
   score: number;
   status: string;
   treatment_needed: string;
-  days_overdue: number;
+  cycles_overdue: number;
 }
 
 export interface ActivityData {
