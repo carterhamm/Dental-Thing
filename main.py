@@ -64,7 +64,7 @@ def _init_firebase():
     if b64:
         try:
             decoded = base64.b64decode(b64)
-            sa_dict = json.loads(decoded)
+            sa_dict = json.loads(decoded, strict=False)
             # init_firestore now accepts dicts directly
             init_firestore(sa_dict)
             print("Firebase initialized from FIREBASE_SERVICE_ACCOUNT_BASE64")
