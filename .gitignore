@@ -20,6 +20,7 @@ __pycache__/
 # Environment variables
 .env
 .env.local
+.env*.local
 
 # Firebase service account (never commit this!)
 *serviceAccountKey*.json
@@ -30,3 +31,8 @@ Thumbs.db
 
 # Node
 node_modules/
+dist
+*.log
+functions/node_modules
+functions/lib
+.firebase
