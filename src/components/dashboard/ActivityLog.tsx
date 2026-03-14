@@ -33,6 +33,15 @@ export function ActivityLog({ entries }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto space-y-1">
+        {entries.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full text-center py-8">
+            <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mb-3">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 6h12M4 10h8M4 14h10" stroke="#d1d5db" strokeWidth="1.5" strokeLinecap="round"/></svg>
+            </div>
+            <span className="text-[13px] font-medium text-gray-400">No activity yet</span>
+            <span className="text-[11px] text-gray-300 mt-1">Events will stream here in real time</span>
+          </div>
+        )}
         {entries.map((entry, i) => {
           const cfg = TYPE_CONFIG[entry.type];
           return (

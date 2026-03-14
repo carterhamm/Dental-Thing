@@ -35,6 +35,15 @@ export function PatientQueue({ patients }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto space-y-0.5">
+        {patients.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full text-center py-8">
+            <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mb-3">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M13 7a3 3 0 11-6 0 3 3 0 016 0zM4 15c0-2.21 2.69-4 6-4s6 1.79 6 4" stroke="#d1d5db" strokeWidth="1.5" strokeLinecap="round"/></svg>
+            </div>
+            <span className="text-[13px] font-medium text-gray-400">No patients queued</span>
+            <span className="text-[11px] text-gray-300 mt-1">Candidates will appear when the agent starts</span>
+          </div>
+        )}
         {patients.map((p, i) => {
           const s = STATUS_STYLE[p.status];
           return (

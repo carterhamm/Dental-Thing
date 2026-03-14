@@ -7,6 +7,20 @@ interface Props {
 export function CancellationSlot({ status, bookedBy, slotTime = '—' }: Props) {
   const isFilled = status === 'filled';
   const isBooking = status === 'booking';
+  const isEmpty = slotTime === '—';
+
+  if (isEmpty) {
+    return (
+      <div className="bg-white rounded-2xl p-6 flex flex-col items-center justify-center h-full border-l-4 border-l-gray-200"
+        style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}>
+        <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mb-3">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 4v6l4 2" stroke="#d1d5db" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><circle cx="10" cy="10" r="7" stroke="#d1d5db" strokeWidth="1.5"/></svg>
+        </div>
+        <span className="text-[13px] font-medium text-gray-400">No cancellations</span>
+        <span className="text-[11px] text-gray-300 mt-1">Slots will appear here when a patient cancels</span>
+      </div>
+    );
+  }
 
   return (
     <div className={`bg-white rounded-2xl p-6 flex flex-col justify-between h-full border-l-4 transition-all duration-500 relative overflow-hidden ${
