@@ -318,39 +318,38 @@ ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_AGENT_ID = os.environ.get("ELEVENLABS_AGENT_ID", "")
 
 
+ELEVENLABS_PHONE_NUMBER_ID = os.environ.get("ELEVENLABS_PHONE_NUMBER_ID", "")
+
+
 def trigger_voice_call(patient: dict):
-    """Trigger outbound voice call via ElevenLabs Conversational AI.
+    """Trigger outbound voice call via ElevenLabs Conversational AI + Twilio.
 
-    Prerequisites:
-    1. Create an agent at https://elevenlabs.io/app/conversational-ai
-       - System prompt: dental office calling about a cancellation opening
-       - Voice: your chosen voice ID
-       - Link your Twilio account in agent settings
-    2. Set ELEVENLABS_AGENT_ID env var to your agent's ID
-    3. Set ELEVENLABS_API_KEY env var
-
-    When the call ends, ElevenLabs can POST to /call-outcome via webhook,
-    or you can poll the conversation status.
+    Uses POST /v1/convai/twilio/outbound-call
+    Requires: ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, ELEVENLABS_PHONE_NUMBER_ID
     """
-    if not ELEVENLABS_API_KEY or not ELEVENLABS_AGENT_ID:
+    if not ELEVENLABS_API_KEY or not ELEVENLABS_AGENT_ID or not ELEVENLABS_PHONE_NUMBER_ID:
         print(f"[NO ELEVENLABS] Would call {patient['name']} at {patient['phone']}")
+        print(f"  API_KEY={'set' if ELEVENLABS_API_KEY else 'MISSING'}")
+        print(f"  AGENT_ID={ELEVENLABS_AGENT_ID or 'MISSING'}")
+        print(f"  PHONE_NUMBER_ID={ELEVENLABS_PHONE_NUMBER_ID or 'MISSING'}")
         return
 
     import requests
-    # Initiate outbound call via ElevenLabs
     resp = requests.post(
-        f"https://api.elevenlabs.io/v1/convai/conversation/create-call",
+        "https://api.elevenlabs.io/v1/convai/twilio/outbound-call",
         headers={
             "xi-api-key": ELEVENLABS_API_KEY,
             "Content-Type": "application/json",
         },
         json={
             "agent_id": ELEVENLABS_AGENT_ID,
-            "customer_number": patient["phone"],
+            "agent_phone_number_id": ELEVENLABS_PHONE_NUMBER_ID,
+            "to_number": patient["phone"],
         },
     )
     if resp.ok:
-        print(f"[ELEVENLABS] Call initiated to {patient['name']}: {resp.json()}")
+        data = resp.json()
+        print(f"[ELEVENLABS] Call initiated to {patient['name']}: {data}")
         _phone_to_patient[patient["phone"]] = patient["name"]
     else:
         print(f"[ELEVENLABS] Call failed: {resp.status_code} {resp.text}")
