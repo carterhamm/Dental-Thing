@@ -19,8 +19,9 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from agent.firestore import init_firestore, reset_session
@@ -212,36 +213,137 @@ async def handle_outcome_async(patient_name: str, outcome: str):
         _is_running = False
 
 
-# --- Voice/SMS Stubs (UI/VOICE PERSON OWNS THESE) ---
+# --- Twilio SMS ---
 
-def trigger_voice_call(patient: dict):
-    """Trigger a voice call via ElevenLabs Conversational AI + Twilio.
+TWILIO_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_PHONE = os.environ.get("TWILIO_PHONE_NUMBER", "")
 
-    UI/VOICE PERSON: Replace this stub with your ElevenLabs integration.
-    When the call ends, your code should POST to /call-outcome:
-        POST /call-outcome
-        {"patient_name": "Sarah Kim", "outcome": "confirmed"}
-        outcome is one of: "confirmed", "declined", "no_answer"
+# Phone-to-patient lookup (populated when we send SMS)
+_phone_to_patient: dict[str, str] = {}
 
-    Args:
-        patient: Dict with "name" and "phone" keys
-    """
-    print(f"[STUB] Would call {patient['name']} at {patient['phone']}")
+_twilio_client = None
+
+def get_twilio():
+    global _twilio_client
+    if _twilio_client is None and TWILIO_SID and TWILIO_AUTH:
+        from twilio.rest import Client
+        _twilio_client = Client(TWILIO_SID, TWILIO_AUTH)
+    return _twilio_client
 
 
 def send_sms(patient: dict, slot: dict):
-    """Send an SMS via Twilio.
+    """Send SMS via Twilio to the patient about the open slot."""
+    client = get_twilio()
+    if not client:
+        print(f"[NO TWILIO] Would SMS {patient['name']} at {patient['phone']}")
+        return
 
-    UI/VOICE PERSON: Replace this stub with your Twilio integration.
-    When the patient replies, your code should POST to /sms-reply:
-        POST /sms-reply
-        {"patient_name": "Sarah Kim", "reply": "YES"}
+    body = (
+        f"Hi {patient['name'].split()[0]}, this is your dental office. "
+        f"We have an opening at {slot.get('time', 'today')} for a "
+        f"{slot.get('treatment', 'cleaning')}. Would you like to book it? "
+        f"Reply YES or NO."
+    )
+    msg = client.messages.create(
+        body=body,
+        from_=TWILIO_PHONE,
+        to=patient["phone"],
+    )
+    # Track phone→patient mapping so we can match inbound replies
+    _phone_to_patient[patient["phone"]] = patient["name"]
+    print(f"[TWILIO] SMS sent to {patient['name']}: {msg.sid}")
 
-    Args:
-        patient: Dict with "name" and "phone" keys
-        slot: Dict with appointment details
+
+@app.post("/webhooks/twilio-sms")
+async def twilio_sms_webhook(request: Request):
+    """Twilio inbound SMS webhook.
+
+    Configure in Twilio Console:
+      Phone Numbers → your number → Messaging →
+      'A MESSAGE COMES IN' → Webhook URL:
+      https://<your-backend>/webhooks/twilio-sms  (POST)
     """
-    print(f"[STUB] Would SMS {patient['name']} at {patient['phone']}")
+    from starlette.requests import Request as _  # already imported
+    form = await request.form()
+    from_number = form.get("From", "")
+    body_text = form.get("Body", "")
+
+    # Look up patient by phone number
+    patient_name = _phone_to_patient.get(from_number, "")
+    if not patient_name:
+        # Try without +1 prefix
+        stripped = from_number.lstrip("+1")
+        for phone, name in _phone_to_patient.items():
+            if phone.replace("-", "").replace(" ", "").replace("(", "").replace(")", "").endswith(stripped[-10:]):
+                patient_name = name
+                break
+
+    if not patient_name:
+        print(f"[TWILIO] Unknown sender: {from_number} said '{body_text}'")
+        return {"status": "unknown_sender"}
+
+    # Forward to the existing /sms-reply logic
+    reply_lower = body_text.lower().strip()
+    if reply_lower in ("yes", "y", "yeah", "sure", "ok", "okay", "yep", "absolutely"):
+        new_status = "confirmed"
+    elif reply_lower in ("no", "n", "nope", "can't", "cannot", "no thanks"):
+        new_status = "declined"
+    else:
+        new_status = "declined"
+
+    if _is_running:
+        asyncio.create_task(handle_outcome_async(patient_name, new_status))
+
+    # Twilio expects TwiML response
+    return Response(
+        content='<Response></Response>',
+        media_type="application/xml",
+    )
+
+
+# --- ElevenLabs Voice Calls ---
+
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_AGENT_ID = os.environ.get("ELEVENLABS_AGENT_ID", "")
+
+
+def trigger_voice_call(patient: dict):
+    """Trigger outbound voice call via ElevenLabs Conversational AI.
+
+    Prerequisites:
+    1. Create an agent at https://elevenlabs.io/app/conversational-ai
+       - System prompt: dental office calling about a cancellation opening
+       - Voice: your chosen voice ID
+       - Link your Twilio account in agent settings
+    2. Set ELEVENLABS_AGENT_ID env var to your agent's ID
+    3. Set ELEVENLABS_API_KEY env var
+
+    When the call ends, ElevenLabs can POST to /call-outcome via webhook,
+    or you can poll the conversation status.
+    """
+    if not ELEVENLABS_API_KEY or not ELEVENLABS_AGENT_ID:
+        print(f"[NO ELEVENLABS] Would call {patient['name']} at {patient['phone']}")
+        return
+
+    import requests
+    # Initiate outbound call via ElevenLabs
+    resp = requests.post(
+        f"https://api.elevenlabs.io/v1/convai/conversation/create-call",
+        headers={
+            "xi-api-key": ELEVENLABS_API_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "agent_id": ELEVENLABS_AGENT_ID,
+            "customer_number": patient["phone"],
+        },
+    )
+    if resp.ok:
+        print(f"[ELEVENLABS] Call initiated to {patient['name']}: {resp.json()}")
+        _phone_to_patient[patient["phone"]] = patient["name"]
+    else:
+        print(f"[ELEVENLABS] Call failed: {resp.status_code} {resp.text}")
 
 
 # --- Run directly ---

@@ -1,9 +1,10 @@
 interface Props {
   status: 'open' | 'booking' | 'filled';
   bookedBy?: string;
+  slotTime?: string;
 }
 
-export function CancellationSlot({ status, bookedBy }: Props) {
+export function CancellationSlot({ status, bookedBy, slotTime = '—' }: Props) {
   const isFilled = status === 'filled';
   const isBooking = status === 'booking';
 
@@ -42,7 +43,7 @@ export function CancellationSlot({ status, bookedBy }: Props) {
         </div>
 
         <div className="text-[32px] font-bold tracking-tight text-gray-900 mb-0.5">
-          2:30 PM
+          {slotTime}
         </div>
         <div className="text-gray-400 text-[13px]">
           Today &middot; 60 min cleaning
