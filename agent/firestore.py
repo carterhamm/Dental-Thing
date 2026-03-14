@@ -140,6 +140,55 @@ def update_recovered(amount: int) -> None:
     }, merge=True)
 
 
+def initialize_session(slot: dict, recall_list: list[dict] | None = None) -> list[dict]:
+    """
+    Initialize a new session: score candidates and push everything to Firestore.
+
+    This is the main entry point when a cancellation happens.
+    Call this once, then use update_candidates() for status changes.
+
+    Args:
+        slot: The cancelled slot to fill (dict with treatment, time, date, value)
+        recall_list: Optional patient list. If None, uses mock data.
+
+    Returns:
+        Scored and ranked candidates list (also written to Firestore)
+    """
+    from agent.brain import score_candidates
+    from agent.mock_data import RECALL_LIST
+
+    # Use mock data if no recall list provided
+    if recall_list is None:
+        recall_list = RECALL_LIST
+
+    # Score and rank candidates using brain logic
+    candidates = score_candidates(recall_list, slot)
+
+    # Write everything to Firestore
+    db = _get_db()
+
+    # 1. Write the slot
+    db.collection("slots").document("active").set({
+        **slot,
+        "status": "filling",
+    })
+
+    # 2. Set agent status to running
+    db.collection("agent").document("status").set({
+        "status": "running",
+        "recovered": 0,
+    })
+
+    # 3. Write all candidates
+    update_candidates(candidates)
+
+    # 4. Log the activity
+    add_activity("event", f"Scoring {len(candidates)} candidates for {slot.get('treatment', 'appointment')}")
+    add_activity("thinking", f"Top candidate: {candidates[0]['name']} (score: {candidates[0]['score']})")
+
+    return candidates
+
+
 def reset_session() -> None:
     """
     Reset the session to initial demo state.

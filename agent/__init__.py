@@ -22,15 +22,39 @@ from agent.state import (
     is_terminal_status,
 )
 from agent.mock_data import RECALL_LIST, DEMO_SLOT
+from agent.firestore import (
+    init_firestore,
+    initialize_session,
+    add_activity,
+    update_agent_status,
+    update_slot_status,
+    update_candidates,
+    update_recovered,
+    reset_session,
+)
 
 __all__ = [
+    # Brain logic
     "score_candidate",
     "score_candidates",
     "get_next_action",
     "update_candidate_status",
     "calculate_recovered_revenue",
+    # State machines
     "CANDIDATE_TRANSITIONS",
     "AGENT_TRANSITIONS",
     "SLOT_TRANSITIONS",
     "is_terminal_status",
+    # Mock data
+    "RECALL_LIST",
+    "DEMO_SLOT",
+    # Firestore helpers
+    "init_firestore",
+    "initialize_session",
+    "add_activity",
+    "update_agent_status",
+    "update_slot_status",
+    "update_candidates",
+    "update_recovered",
+    "reset_session",
 ]
