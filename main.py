@@ -410,6 +410,14 @@ def trigger_voice_call(patient: dict):
     """Trigger outbound voice call via ElevenLabs Conversational AI + Twilio."""
     if not ELEVENLABS_API_KEY or not ELEVENLABS_AGENT_ID or not ELEVENLABS_PHONE_NUMBER_ID:
         print(f"[NO ELEVENLABS] Would call {patient['name']} at {patient['phone']}")
+        print(f"[MOCK] Simulating 'no_answer' after 3 seconds...")
+        # Simulate a call outcome so the demo can continue
+        import threading
+        def send_mock_outcome():
+            import time
+            time.sleep(3)
+            _post_outcome(patient['name'], 'no_answer')
+        threading.Thread(target=send_mock_outcome, daemon=True).start()
         return
 
     import requests
@@ -517,7 +525,8 @@ def _poll_call_outcome(conversation_id: str, patient_name: str):
 def _post_outcome(patient_name: str, outcome: str):
     """Post call outcome back to our own /call-outcome endpoint."""
     import requests as req
-    server_url = os.environ.get("SERVER_URL", "https://dental-agent-production.up.railway.app")
+    # Use localhost when running locally, deployed URL otherwise
+    server_url = os.environ.get("SERVER_URL", "http://localhost:8000")
     try:
         r = req.post(
             f"{server_url}/call-outcome",
