@@ -377,10 +377,90 @@ def trigger_voice_call(patient: dict):
     )
     if resp.ok:
         data = resp.json()
+        conv_id = data.get("conversation_id", "")
         print(f"[ELEVENLABS] Call initiated to {patient['name']}: {data}")
         _phone_to_patient[patient["phone"]] = patient["name"]
+
+        # Poll for call outcome in background
+        import threading
+        threading.Thread(
+            target=_poll_call_outcome,
+            args=(conv_id, patient["name"]),
+            daemon=True,
+        ).start()
     else:
         print(f"[ELEVENLABS] Call failed: {resp.status_code} {resp.text}")
+        # Treat failed call as no_answer so orchestrator falls back to SMS
+        if _is_running:
+            import threading
+            threading.Thread(
+                target=lambda: _post_outcome(patient["name"], "no_answer"),
+                daemon=True,
+            ).start()
+
+
+def _poll_call_outcome(conversation_id: str, patient_name: str):
+    """Poll ElevenLabs conversation status until the call ends, then feed outcome back."""
+    import time
+    import requests as req
+
+    print(f"[POLL] Watching conversation {conversation_id} for {patient_name}")
+    for attempt in range(60):  # poll for up to 5 minutes
+        time.sleep(5)
+        try:
+            r = req.get(
+                f"https://api.elevenlabs.io/v1/convai/conversations/{conversation_id}",
+                headers={"xi-api-key": ELEVENLABS_API_KEY},
+            )
+            if not r.ok:
+                print(f"[POLL] Status check failed: {r.status_code}")
+                continue
+
+            data = r.json()
+            status = data.get("status", "")
+
+            if status not in ("done", "failed"):
+                continue
+
+            # Call is over — determine outcome
+            analysis = data.get("analysis", {})
+            call_successful = analysis.get("call_successful", "")
+            transcript_summary = analysis.get("transcript_summary", "")
+
+            print(f"[POLL] Call ended: status={status}, successful={call_successful}")
+            print(f"[POLL] Summary: {transcript_summary}")
+
+            # Map ElevenLabs outcome to our status
+            if call_successful == "success":
+                outcome = "confirmed"
+            elif "declined" in transcript_summary.lower() or "no" in transcript_summary.lower():
+                outcome = "declined"
+            else:
+                outcome = "no_answer"
+
+            _post_outcome(patient_name, outcome)
+            return
+
+        except Exception as e:
+            print(f"[POLL] Error: {e}")
+
+    # Timeout — treat as no_answer
+    print(f"[POLL] Timeout waiting for {patient_name}")
+    _post_outcome(patient_name, "no_answer")
+
+
+def _post_outcome(patient_name: str, outcome: str):
+    """Post call outcome back to our own /call-outcome endpoint."""
+    import requests as req
+    server_url = os.environ.get("SERVER_URL", "https://dental-agent-production.up.railway.app")
+    try:
+        r = req.post(
+            f"{server_url}/call-outcome",
+            json={"patient_name": patient_name, "outcome": outcome},
+        )
+        print(f"[POLL] Posted outcome: {patient_name} → {outcome} (status={r.status_code})")
+    except Exception as e:
+        print(f"[POLL] Failed to post outcome: {e}")
 
 
 # --- Run directly ---

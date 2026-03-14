@@ -18,7 +18,7 @@ Patient fields:
 RECALL_LIST = [
     # --- Demo patient (real number for testing) ---
     {
-        "name": "Carter Hamilton",
+        "name": "Carter Hammond",
         "phone": "+17192136213",
         "treatment_needed": "cleaning",
         "cycles_overdue": 2,
