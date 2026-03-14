@@ -10,6 +10,7 @@ Carter's dashboard collections (when Firestore is active):
   - agent/status          → agent status doc
   - patients/p0, p1, ...  → individual patient docs
   - activity_log/         → activity collection with serverTimestamp
+  - schedule/today        → daily schedule with slots array
 """
 
 import os
@@ -130,6 +131,48 @@ def get_patient_by_phone(phone: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Schedule (daily view)
+# ---------------------------------------------------------------------------
+
+def seed_schedule() -> None:
+    """Write today's schedule to schedule/today. Called on startup and reset."""
+    from agent.mock_schedule import DAILY_SCHEDULE
+
+    if _firestore_available and _db:
+        _db.collection("schedule").document("today").set(DAILY_SCHEDULE)
+    else:
+        print("  [schedule] seeded today's schedule")
+        for slot in DAILY_SCHEDULE["slots"]:
+            status = slot["status"]
+            patient = slot.get("patient_name") or "(open)"
+            print(f"    {slot['time']} - {slot['treatment']} - {status} - {patient}")
+
+
+def update_schedule_slot(slot_id: str, patient_name: str) -> None:
+    """Update a schedule slot when filled: status → 'filled', patient_name → name.
+
+    Args:
+        slot_id: The slot ID to update (e.g., 'slot_1400')
+        patient_name: Name of the patient who confirmed
+    """
+    if _firestore_available and _db:
+        # Read current schedule, update the matching slot, write back
+        doc_ref = _db.collection("schedule").document("today")
+        doc = doc_ref.get()
+        if doc.exists:
+            data = doc.to_dict()
+            slots = data.get("slots", [])
+            for slot in slots:
+                if slot.get("id") == slot_id:
+                    slot["status"] = "filled"
+                    slot["patient_name"] = patient_name
+                    break
+            doc_ref.set({"slots": slots})
+    else:
+        print(f"  [schedule] slot {slot_id} → filled by {patient_name}")
+
+
+# ---------------------------------------------------------------------------
 # Session Management
 # ---------------------------------------------------------------------------
 
@@ -185,5 +228,9 @@ def reset_session() -> None:
             "status": "idle",
             "recovered": 0,
         })
+
+        # Reset daily schedule
+        seed_schedule()
     else:
         print("  [reset] session cleared")
+        seed_schedule()

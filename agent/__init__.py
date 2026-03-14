@@ -22,6 +22,7 @@ from agent.state import (
     is_terminal_status,
 )
 from agent.mock_data import RECALL_LIST, DEMO_SLOT
+from agent.mock_schedule import DAILY_SCHEDULE, CANCELLED_SLOT_ID
 from agent.firestore import (
     init_firestore,
     initialize_session,
@@ -32,6 +33,8 @@ from agent.firestore import (
     update_recovered,
     reset_session,
     get_patient_by_phone,
+    seed_schedule,
+    update_schedule_slot,
 )
 
 __all__ = [
@@ -49,6 +52,8 @@ __all__ = [
     # Mock data
     "RECALL_LIST",
     "DEMO_SLOT",
+    "DAILY_SCHEDULE",
+    "CANCELLED_SLOT_ID",
     # Firestore helpers
     "init_firestore",
     "initialize_session",
@@ -59,4 +64,6 @@ __all__ = [
     "update_recovered",
     "reset_session",
     "get_patient_by_phone",
+    "seed_schedule",
+    "update_schedule_slot",
 ]
