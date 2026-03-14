@@ -63,9 +63,6 @@ RECALL_LIST = [
         "preferred_time_of_day": "afternoon",
         "pending_treatment": False,
     },
-<<<<<<< HEAD
-    # --- Other cleaning patients ---
-=======
     {
         "name": "Spencer Hammond",
         "phone": "+17195053575",
@@ -76,8 +73,7 @@ RECALL_LIST = [
         "preferred_time_of_day": "afternoon",
         "pending_treatment": False,
     },
-    # --- High priority cleaning patients ---
->>>>>>> origin/carter
+    # --- Other cleaning patients ---
     {
         "name": "Sarah Kim",
         "phone": "+1-801-555-0101",
