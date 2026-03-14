@@ -3,46 +3,64 @@ Mock data for demo/testing.
 
 This data simulates what would come from a real dental practice's
 recall list and scheduling system.
+
+Patient fields:
+- name: Patient name
+- phone: Contact number
+- treatment_needed: Type of treatment needed
+- cycles_overdue: Number of treatment cycles missed (1 cycle = ~6 months for cleanings)
+- reliability_score: 0-1 score based on appointment history
+- preferred_time_of_day: "morning" | "afternoon" | "evening" - derived from visit history
+- pending_treatment: True if they have unfinished treatment (e.g., started root canal)
 """
 
 # Patients on the recall list (overdue for appointments)
-# Varied by: treatment type, days overdue, reliability, demographics
 RECALL_LIST = [
     # --- High priority cleaning patients ---
     {
         "name": "Sarah Kim",
         "phone": "+1-801-555-0101",
         "treatment_needed": "cleaning",
-        "days_overdue": 15,
+        "cycles_overdue": 1,
         "reliability_score": 0.95,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
     },
     {
         "name": "James Park",
         "phone": "+1-801-555-0102",
         "treatment_needed": "cleaning",
-        "days_overdue": 22,
+        "cycles_overdue": 1,
         "reliability_score": 0.85,
+        "preferred_time_of_day": "morning",
+        "pending_treatment": False,
     },
     {
         "name": "Emily Rodriguez",
         "phone": "+1-801-555-0103",
         "treatment_needed": "cleaning",
-        "days_overdue": 10,
+        "cycles_overdue": 1,
         "reliability_score": 0.90,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
     },
     {
         "name": "Michael Thompson",
         "phone": "+1-801-555-0104",
         "treatment_needed": "cleaning",
-        "days_overdue": 45,
+        "cycles_overdue": 2,
         "reliability_score": 0.70,
+        "preferred_time_of_day": "morning",
+        "pending_treatment": False,
     },
     {
         "name": "David Chen",
         "phone": "+1-801-555-0105",
         "treatment_needed": "cleaning",
-        "days_overdue": 5,
+        "cycles_overdue": 1,
         "reliability_score": 0.60,
+        "preferred_time_of_day": "evening",
+        "pending_treatment": False,
     },
 
     # --- Filling patients ---
@@ -50,22 +68,28 @@ RECALL_LIST = [
         "name": "Maria Garcia",
         "phone": "+1-801-555-0106",
         "treatment_needed": "filling",
-        "days_overdue": 30,
+        "cycles_overdue": 1,
         "reliability_score": 0.85,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": True,  # Started but didn't finish filling
     },
     {
         "name": "Robert Williams",
         "phone": "+1-801-555-0107",
         "treatment_needed": "filling",
-        "days_overdue": 60,
+        "cycles_overdue": 2,
         "reliability_score": 0.75,
+        "preferred_time_of_day": "morning",
+        "pending_treatment": False,
     },
     {
         "name": "Jennifer Lee",
         "phone": "+1-801-555-0108",
         "treatment_needed": "filling",
-        "days_overdue": 14,
+        "cycles_overdue": 1,
         "reliability_score": 0.92,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
     },
 
     # --- Crown patients ---
@@ -73,15 +97,19 @@ RECALL_LIST = [
         "name": "William Johnson",
         "phone": "+1-801-555-0109",
         "treatment_needed": "crown",
-        "days_overdue": 25,
+        "cycles_overdue": 1,
         "reliability_score": 0.88,
+        "preferred_time_of_day": "morning",
+        "pending_treatment": True,  # Has temp crown, needs permanent
     },
     {
         "name": "Patricia Brown",
         "phone": "+1-801-555-0110",
         "treatment_needed": "crown",
-        "days_overdue": 18,
+        "cycles_overdue": 1,
         "reliability_score": 0.80,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
     },
 
     # --- Root canal patients ---
@@ -89,15 +117,19 @@ RECALL_LIST = [
         "name": "Christopher Martinez",
         "phone": "+1-801-555-0111",
         "treatment_needed": "root_canal",
-        "days_overdue": 7,
+        "cycles_overdue": 1,
         "reliability_score": 0.65,
+        "preferred_time_of_day": "morning",
+        "pending_treatment": True,  # Started root canal, needs completion
     },
     {
         "name": "Amanda Davis",
         "phone": "+1-801-555-0112",
         "treatment_needed": "root_canal",
-        "days_overdue": 35,
+        "cycles_overdue": 2,
         "reliability_score": 0.78,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
     },
 
     # --- Exam patients ---
@@ -105,15 +137,19 @@ RECALL_LIST = [
         "name": "Daniel Wilson",
         "phone": "+1-801-555-0113",
         "treatment_needed": "exam",
-        "days_overdue": 90,
+        "cycles_overdue": 3,
         "reliability_score": 0.55,
+        "preferred_time_of_day": "morning",
+        "pending_treatment": False,
     },
     {
         "name": "Jessica Taylor",
         "phone": "+1-801-555-0114",
         "treatment_needed": "exam",
-        "days_overdue": 120,
+        "cycles_overdue": 4,
         "reliability_score": 0.70,
+        "preferred_time_of_day": "evening",
+        "pending_treatment": False,
     },
 
     # --- Whitening patients ---
@@ -121,15 +157,19 @@ RECALL_LIST = [
         "name": "Andrew Anderson",
         "phone": "+1-801-555-0115",
         "treatment_needed": "whitening",
-        "days_overdue": 3,
+        "cycles_overdue": 1,
         "reliability_score": 0.98,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
     },
     {
         "name": "Sophia Nguyen",
         "phone": "+1-801-555-0116",
         "treatment_needed": "whitening",
-        "days_overdue": 12,
+        "cycles_overdue": 1,
         "reliability_score": 0.82,
+        "preferred_time_of_day": "morning",
+        "pending_treatment": False,
     },
 ]
 
@@ -211,6 +251,7 @@ MOCK_STATS = {
         "exam": len(get_patients_for_treatment("exam")),
         "whitening": len(get_patients_for_treatment("whitening")),
     },
-    "avg_days_overdue": sum(p["days_overdue"] for p in RECALL_LIST) // len(RECALL_LIST),
+    "avg_cycles_overdue": round(sum(p["cycles_overdue"] for p in RECALL_LIST) / len(RECALL_LIST), 1),
     "avg_reliability": round(sum(p["reliability_score"] for p in RECALL_LIST) / len(RECALL_LIST), 2),
+    "pending_treatments": len([p for p in RECALL_LIST if p["pending_treatment"]]),
 }
