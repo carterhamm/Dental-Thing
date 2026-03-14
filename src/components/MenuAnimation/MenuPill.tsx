@@ -8,19 +8,28 @@ import {
 } from './animationEngine';
 import type { MorphTarget, MorphState, AnimSprings } from './animationEngine';
 
-const NAV_ITEMS = [
+type MenuItem =
+  | { label: string; action?: string; accent?: boolean }
+  | { sep: true };
+
+const NAV_ITEMS: MenuItem[] = [
   { label: 'Dashboard' },
   { sep: true },
   { label: 'Patients' },
   { label: 'Activity Log' },
   { sep: true },
+  { label: 'Add Mock Data', action: 'seed', accent: true },
   { label: 'Settings' },
-] as const;
+];
 
-const PILL_W = 44, PILL_H = 36;
-const MENU_W = 200, MENU_H = 220, MENU_R = 16;
+const PILL_W = 100, PILL_H = 36;
+const MENU_W = 210, MENU_H = 260, MENU_R = 16;
 
-export function MenuPill() {
+interface Props {
+  onAction?: (action: string) => void;
+}
+
+export function MenuPill({ onAction }: Props) {
   const pathRef = useRef<SVGPathElement>(null);
   const glowRef = useRef<SVGPathElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -174,6 +183,13 @@ export function MenuPill() {
     };
   }, [close]);
 
+  const handleItemClick = useCallback((item: MenuItem) => {
+    if ('action' in item && item.action && onAction) {
+      onAction(item.action);
+    }
+    close();
+  }, [close, onAction]);
+
   const overlay = (
     <div
       onClick={overlayActive ? onOverlayClick : undefined}
@@ -184,7 +200,7 @@ export function MenuPill() {
     >
       <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0 }}>
         <path ref={glowRef} fill="none" stroke="rgba(0,0,0,0.06)" strokeWidth="12" opacity="0" style={{ filter: 'blur(8px)' }} />
-        <path ref={pathRef} fill="rgba(255,255,255,0.98)" stroke="rgba(0,0,0,0.08)" strokeWidth="0.5" style={{ filter: 'drop-shadow(0 2px 12px rgba(0,0,0,0.12))' }} />
+        <path ref={pathRef} fill="rgba(255,255,255,0.98)" stroke="rgba(0,0,0,0.06)" strokeWidth="0.5" style={{ filter: 'drop-shadow(0 4px 24px rgba(0,0,0,0.12))' }} />
       </svg>
 
       <div ref={menuRef} style={{ position: 'fixed', opacity: 0, overflow: 'hidden', pointerEvents: 'none', borderRadius: MENU_R }}>
@@ -196,14 +212,16 @@ export function MenuPill() {
             return (
               <div
                 key={i}
-                onClick={close}
+                onClick={() => handleItemClick(item)}
                 style={{
                   display: 'flex', alignItems: 'center',
-                  padding: '10px 14px', cursor: 'pointer', color: '#1d1d1f', fontSize: 13.5,
-                  fontWeight: 500,
+                  padding: '10px 14px', cursor: 'pointer',
+                  color: item.accent ? '#0097A7' : '#1d1d1f',
+                  fontSize: 13.5,
+                  fontWeight: item.accent ? 600 : 500,
                   borderRadius: 10, margin: '1px 0',
                 }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
+                onMouseEnter={e => (e.currentTarget.style.background = item.accent ? 'rgba(125,249,255,0.08)' : 'rgba(0,0,0,0.04)')}
                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
               >
                 {item.label}
@@ -225,7 +243,7 @@ export function MenuPill() {
           border: '1px solid rgba(0,0,0,0.08)',
           background: 'rgba(0,0,0,0.03)',
           color: '#1d1d1f', cursor: 'pointer', outline: 'none',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
           opacity: pillHidden ? 0 : 1,
           pointerEvents: pillHidden ? 'none' : 'auto',
           position: 'relative', zIndex: 20,
@@ -234,11 +252,12 @@ export function MenuPill() {
         onMouseEnter={e => (e.currentTarget.style.background = 'rgba(0,0,0,0.06)')}
         onMouseLeave={e => (e.currentTarget.style.background = 'rgba(0,0,0,0.03)')}
       >
-        <svg width="16" height="12" viewBox="0 0 16 12" fill="none">
-          <rect y="0" width="16" height="1.5" rx="0.75" fill="rgba(0,0,0,0.55)"/>
-          <rect y="5.25" width="16" height="1.5" rx="0.75" fill="rgba(0,0,0,0.55)"/>
-          <rect y="10.5" width="16" height="1.5" rx="0.75" fill="rgba(0,0,0,0.55)"/>
+        <svg width="14" height="10" viewBox="0 0 14 10" fill="none">
+          <rect y="0" width="14" height="1.5" rx="0.75" fill="rgba(0,0,0,0.5)"/>
+          <rect y="4.25" width="14" height="1.5" rx="0.75" fill="rgba(0,0,0,0.5)"/>
+          <rect y="8.5" width="14" height="1.5" rx="0.75" fill="rgba(0,0,0,0.5)"/>
         </svg>
+        <span style={{ fontSize: 12, fontWeight: 600, color: '#6e6e73', letterSpacing: '0.01em' }}>Menu</span>
       </button>
       {createPortal(overlay, document.body)}
     </>

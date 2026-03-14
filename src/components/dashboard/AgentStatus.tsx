@@ -7,22 +7,26 @@ interface Props {
   totalPatients: number;
 }
 
-const PHASE_CONFIG: Record<AgentPhase, { label: string; cls: string; dotCls: string; borderCls: string }> = {
-  idle:       { label: 'IDLE',        cls: 'text-gray-400',     dotCls: 'bg-gray-300',     borderCls: 'border-l-gray-200' },
-  calling:    { label: 'CALLING',     cls: 'text-[#0097A7]',    dotCls: 'bg-[#7DF9FF]',    borderCls: 'border-l-[#7DF9FF]' },
-  no_answer:  { label: 'NO ANSWER',   cls: 'text-amber-600',    dotCls: 'bg-amber-500',    borderCls: 'border-l-amber-400' },
-  sms_sent:   { label: 'SMS SENT',    cls: 'text-purple-600',   dotCls: 'bg-purple-500',   borderCls: 'border-l-purple-500' },
-  sms_reply:  { label: 'REPLY RECV',  cls: 'text-teal-600',     dotCls: 'bg-teal-500',     borderCls: 'border-l-teal-500' },
-  booking:    { label: 'BOOKING',     cls: 'text-amber-600',    dotCls: 'bg-amber-500',    borderCls: 'border-l-amber-400' },
-  filled:     { label: 'SLOT FILLED', cls: 'text-green-600',    dotCls: 'bg-green-500',    borderCls: 'border-l-green-500' },
+const PHASE_CONFIG: Record<AgentPhase, { label: string; cls: string; dotCls: string; borderCls: string; desc: string }> = {
+  idle:       { label: 'IDLE',        cls: 'text-gray-400',     dotCls: 'bg-gray-300',     borderCls: 'border-l-gray-200', desc: 'Waiting for cancellation...' },
+  calling:    { label: 'CALLING',     cls: 'text-[#0097A7]',    dotCls: 'bg-[#7DF9FF]',    borderCls: 'border-l-[#7DF9FF]', desc: 'Voice call in progress...' },
+  no_answer:  { label: 'NO ANSWER',   cls: 'text-amber-600',    dotCls: 'bg-amber-500',    borderCls: 'border-l-amber-400', desc: 'No answer — switching to SMS' },
+  sms_sent:   { label: 'SMS SENT',    cls: 'text-purple-600',   dotCls: 'bg-purple-500',   borderCls: 'border-l-purple-500', desc: 'Waiting for text reply...' },
+  sms_reply:  { label: 'REPLY RECV',  cls: 'text-[#0097A7]',    dotCls: 'bg-[#7DF9FF]',    borderCls: 'border-l-[#7DF9FF]', desc: 'Patient confirmed!' },
+  booking:    { label: 'BOOKING',     cls: 'text-amber-600',    dotCls: 'bg-amber-500',    borderCls: 'border-l-amber-400', desc: 'Confirming appointment...' },
+  filled:     { label: 'SLOT FILLED', cls: 'text-green-600',    dotCls: 'bg-green-500',    borderCls: 'border-l-green-500', desc: 'Appointment booked successfully' },
 };
 
 export function AgentStatus({ phase, currentPatient, attempt, totalPatients }: Props) {
   const cfg = PHASE_CONFIG[phase];
   const isActive = phase !== 'idle' && phase !== 'filled';
+  const pct = totalPatients > 0 ? (attempt / totalPatients) * 100 : 0;
 
   return (
-    <div className={`bg-white rounded-2xl shadow-sm p-6 flex flex-col justify-between h-full border-l-4 transition-colors duration-500 ${cfg.borderCls}`}>
+    <div
+      className={`bg-white rounded-2xl p-6 flex flex-col justify-between h-full border-l-4 transition-colors duration-500 ${cfg.borderCls}`}
+      style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.04)' }}
+    >
       <div>
         <div className="flex items-center justify-between mb-4">
           <span className="text-[11px] font-semibold tracking-[0.08em] text-gray-400 uppercase">
@@ -37,29 +41,42 @@ export function AgentStatus({ phase, currentPatient, attempt, totalPatients }: P
         {phase !== 'idle' ? (
           <>
             <div className="text-gray-900 text-lg font-semibold mb-1">{currentPatient}</div>
-            <div className="text-gray-400 text-sm">
-              {phase === 'calling' && 'Voice call in progress...'}
-              {phase === 'no_answer' && 'No answer — switching to SMS'}
-              {phase === 'sms_sent' && 'Waiting for text reply...'}
-              {phase === 'sms_reply' && 'Patient confirmed!'}
-              {phase === 'booking' && 'Confirming appointment...'}
-              {phase === 'filled' && 'Appointment booked successfully'}
-            </div>
+            <div className="text-gray-400 text-[13px]">{cfg.desc}</div>
+            {phase === 'calling' && (
+              <div className="flex items-center gap-1 mt-3">
+                {[0, 1, 2, 3, 4].map(i => (
+                  <div
+                    key={i}
+                    className="w-1 rounded-full bg-[#7DF9FF]"
+                    style={{
+                      height: `${8 + Math.sin(i * 1.2) * 8}px`,
+                      animation: `shimmer ${0.6 + i * 0.15}s ease-in-out infinite`,
+                      animationDelay: `${i * 0.1}s`,
+                    }}
+                  />
+                ))}
+                <span className="text-[10px] text-[#0097A7] ml-2 font-medium">Ringing...</span>
+              </div>
+            )}
           </>
         ) : (
-          <div className="text-gray-300 text-sm">Waiting for cancellation...</div>
+          <div className="text-gray-300 text-[13px]">{cfg.desc}</div>
         )}
       </div>
 
       <div className="mt-4 pt-4 border-t border-gray-100">
-        <div className="flex items-center justify-between text-xs text-gray-400 mb-2">
+        <div className="flex items-center justify-between text-[11px] text-gray-400 mb-2">
           <span>Outreach progress</span>
-          <span className="tabular-nums">{attempt} / {totalPatients}</span>
+          <span className="tabular-nums font-medium">{attempt} / {totalPatients}</span>
         </div>
-        <div className="w-full h-1.5 rounded-full bg-gray-100 overflow-hidden">
+        <div className="w-full h-2 rounded-full bg-gray-100 overflow-hidden">
           <div
-            className="h-full rounded-full bg-[#7DF9FF] transition-all duration-700"
-            style={{ width: `${totalPatients > 0 ? (attempt / totalPatients) * 100 : 0}%` }}
+            className="h-full rounded-full transition-all duration-700 relative"
+            style={{
+              width: `${pct}%`,
+              background: 'linear-gradient(90deg, #7DF9FF, #5CE8F0)',
+              boxShadow: pct > 0 ? '0 0 8px rgba(125,249,255,0.5)' : 'none',
+            }}
           />
         </div>
       </div>
