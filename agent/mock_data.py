@@ -27,6 +27,16 @@ RECALL_LIST = [
         "pending_treatment": False,
     },
     {
+        "name": "Carter Hammond",
+        "phone": "+17192136213",
+        "dob": "January 25, 2000",
+        "treatment_needed": "cleaning",
+        "cycles_overdue": 2,
+        "reliability_score": 0.95,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
+    },
+    {
         "name": "Spencer Hammond",
         "phone": "+17195053575",
         "treatment_needed": "cleaning",
@@ -53,7 +63,21 @@ RECALL_LIST = [
         "preferred_time_of_day": "afternoon",
         "pending_treatment": False,
     },
+<<<<<<< HEAD
     # --- Other cleaning patients ---
+=======
+    {
+        "name": "Spencer Hammond",
+        "phone": "+17195053575",
+        "dob": "May 10, 1998",
+        "treatment_needed": "cleaning",
+        "cycles_overdue": 2,
+        "reliability_score": 0.90,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
+    },
+    # --- High priority cleaning patients ---
+>>>>>>> origin/carter
     {
         "name": "Sarah Kim",
         "phone": "+1-801-555-0101",
