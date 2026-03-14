@@ -152,25 +152,28 @@ export function MenuPill({ onAction, onNavigate, activeView }: Props) {
           style={{ filter: 'drop-shadow(0 4px 24px rgba(0,0,0,0.12))' }} />
       </svg>
       <div ref={menuRef} style={{ position: 'fixed', opacity: 0, overflow: 'hidden', pointerEvents: 'none', borderRadius: MENU_R }}>
-        <div style={{ padding: '8px' }}>
+        {/* Accent top bar */}
+        <div style={{ height: 3, background: 'linear-gradient(90deg, #7DF9FF, #00D4E0, transparent)' }} />
+        <div style={{ padding: '6px 8px 8px' }}>
           {NAV_ITEMS.map((item, i) => {
-            if ('sep' in item) return <div key={i} style={{ height: 1, margin: '4px 12px', background: 'rgba(0,0,0,0.06)' }} />;
+            if ('sep' in item) return <div key={i} style={{ height: 1, margin: '4px 12px', background: 'rgba(125,249,255,0.15)' }} />;
             const isActive = 'view' in item && item.view === activeView;
             return (
               <div key={i} onClick={() => handleItemClick(item)} style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 padding: '10px 14px', cursor: 'pointer',
-                color: item.danger ? '#ef4444' : item.accent ? '#0097A7' : '#1a1a2e',
+                color: item.danger ? '#ef4444' : item.accent ? '#0097A7' : isActive ? '#006B7A' : '#1a1a2e',
                 fontSize: 13, fontWeight: isActive ? 700 : 500,
                 borderRadius: 10, margin: '1px 0',
-                background: isActive ? 'rgba(125,249,255,0.08)' : 'transparent',
+                background: isActive ? 'rgba(125,249,255,0.12)' : 'transparent',
                 fontFamily: "'Sora', sans-serif",
+                transition: 'background 0.15s, color 0.15s',
               }}
-              onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'rgba(0,0,0,0.04)'; }}
-              onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
+              onMouseEnter={e => { e.currentTarget.style.background = isActive ? 'rgba(125,249,255,0.18)' : 'rgba(125,249,255,0.06)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = isActive ? 'rgba(125,249,255,0.12)' : 'transparent'; }}
               >
                 <span>{item.label}</span>
-                {isActive && <div style={{ width: 6, height: 6, borderRadius: 3, background: '#7DF9FF' }} />}
+                {isActive && <div style={{ width: 6, height: 6, borderRadius: 3, background: '#7DF9FF', boxShadow: '0 0 6px rgba(125,249,255,0.5)' }} />}
               </div>
             );
           })}

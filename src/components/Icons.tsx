@@ -60,7 +60,8 @@ export const IconCheck = ({ className = '' }) => (
 
 export const IconDollar = ({ className = '' }) => (
   <svg width="20" height="20" viewBox="0 0 20 20" className={className}>
-    <path d="M10 2.5v15M6 7c0-1.4 1.3-2.5 3-2.5h2.5c1.4 0 2.5 1.1 2.5 2.5s-1.1 2.5-2.5 2.5H8c-1.4 0-2.5 1.1-2.5 2.5s1.1 2.5 2.5 2.5h3c1.7 0 3-1.1 3-2.5" stroke="currentColor" {...S}/>
+    <path d="M10 2.5v15" stroke="currentColor" {...S}/>
+    <path d="M13.5 7c0-1.4-1.1-2.5-2.5-2.5H8.5C7.1 4.5 6 5.6 6 7s1.1 2.5 2.5 2.5h3c1.4 0 2.5 1.1 2.5 2.5s-1.1 2.5-2.5 2.5H8c-1.4 0-2.5-1.1-2.5-2.5" stroke="currentColor" {...S}/>
   </svg>
 );
 

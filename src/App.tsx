@@ -136,6 +136,22 @@ function App() {
     }
   }, [showToast]);
 
+  // Tab key cycles views
+  const VIEWS: View[] = ['dashboard', 'patients', 'activity', 'settings'];
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        setView(prev => {
+          const idx = VIEWS.indexOf(prev);
+          return VIEWS[e.shiftKey ? (idx - 1 + VIEWS.length) % VIEWS.length : (idx + 1) % VIEWS.length];
+        });
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const [clock, setClock] = useState(now());
   useEffect(() => { const id = setInterval(() => setClock(now()), 10000); return () => clearInterval(id); }, []);
 
