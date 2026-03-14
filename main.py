@@ -307,8 +307,15 @@ async def twilio_sms_webhook(request: Request):
     elif not patient_name:
         print(f"[TWILIO] Could not match sender {from_number} to any patient")
 
-    # Twilio expects TwiML — send acknowledgment
-    twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+    # Twilio expects TwiML response
+    if patient_name and new_status == "confirmed":
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Great! You\'re booked. We\'ll see you soon!</Message></Response>'
+    elif patient_name and new_status == "declined":
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Message>No worries, thanks for letting us know!</Message></Response>'
+    elif not patient_name:
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Hi! This is the dental office. If you have questions, please call us during business hours.</Message></Response>'
+    else:
+        twiml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
     return Response(content=twiml, media_type="application/xml")
 
 

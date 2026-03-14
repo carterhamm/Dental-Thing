@@ -16,6 +16,16 @@ Patient fields:
 
 # Patients on the recall list (overdue for appointments)
 RECALL_LIST = [
+    # --- Demo patient (real number for testing) ---
+    {
+        "name": "Carter Hamilton",
+        "phone": "+17192136213",
+        "treatment_needed": "cleaning",
+        "cycles_overdue": 2,
+        "reliability_score": 0.95,
+        "preferred_time_of_day": "afternoon",
+        "pending_treatment": False,
+    },
     # --- High priority cleaning patients ---
     {
         "name": "Sarah Kim",
