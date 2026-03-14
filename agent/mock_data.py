@@ -234,8 +234,9 @@ RECALL_LIST = [
 # --- Demo slots (different scenarios) ---
 
 # Default: cleaning slot at 2 PM (most common)
+# NOTE: id must match mock_schedule.py's CANCELLED_SLOT_ID for schedule updates to work
 DEMO_SLOT = {
-    "id": "slot_001",
+    "id": "slot_1400",
     "time": "2:00 PM",
     "date": "Today",
     "treatment": "cleaning",
@@ -245,7 +246,7 @@ DEMO_SLOT = {
 # Alternative slots for testing different scenarios
 DEMO_SLOTS = {
     "cleaning": {
-        "id": "slot_001",
+        "id": "slot_1400",
         "time": "2:00 PM",
         "date": "Today",
         "treatment": "cleaning",

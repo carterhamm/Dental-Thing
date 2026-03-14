@@ -59,8 +59,9 @@ export interface ScheduleData {
 // --- Seed / Initialize ---
 
 export async function seedSessionData() {
+  // id must match mock_schedule.py CANCELLED_SLOT_ID for schedule updates
   await setDoc(doc(db, 'slots', 'active'), {
-    id: 'slot_001',
+    id: 'slot_1400',
     time: '2:00 PM',
     date: 'Today',
     treatment: 'cleaning',

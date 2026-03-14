@@ -242,9 +242,9 @@ def reset_session() -> None:
         for doc in _db.collection("patients").stream():
             doc.reference.delete()
 
-        # Reset slot
+        # Reset slot (id must match mock_schedule.py CANCELLED_SLOT_ID)
         _db.collection("slots").document("active").set({
-            "id": "slot_001",
+            "id": "slot_1400",
             "time": "2:00 PM",
             "date": "Today",
             "treatment": "cleaning",

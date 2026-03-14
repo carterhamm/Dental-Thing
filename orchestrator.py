@@ -24,6 +24,7 @@ from agent.firestore import (
     update_slot_status,
     update_candidates,
     update_recovered,
+    update_schedule_slot,
 )
 from agent.mock_data import RECALL_LIST
 
@@ -233,6 +234,9 @@ class Orchestrator:
             update_slot_status("filled", filled_by=candidate["name"])
             update_recovered(revenue)
             update_agent_status("complete")
+            # Update the daily schedule view
+            slot_id = self.slot.get("id", "slot_1400")
+            update_schedule_slot(slot_id, candidate["name"])
             add_activity("success", f"Slot filled by {candidate['name']}! Recovered ${revenue}.")
             return f"Booked! {candidate['name']} confirmed. ${revenue} recovered."
 
