@@ -121,3 +121,17 @@ export function onScheduleChange(cb: (data: ScheduleData | null) => void) {
   }, (err) => { console.error('[Firestore] schedule/today error:', err); cb(null); });
 }
 
+export interface CallStatusData {
+  status: string;  // "idle", "ringing", "in-progress", "completed", "no-answer", "failed"
+  patient_name: string;
+  call_sid: string;
+}
+
+export function onCallStatusChange(cb: (data: CallStatusData | null) => void) {
+  return onSnapshot(doc(db, 'call', 'active'), (snap) => {
+    const data = snap.exists() ? (snap.data() as CallStatusData) : null;
+    console.log('[Firestore] call/active:', data);
+    cb(data);
+  }, (err) => { console.error('[Firestore] call/active error:', err); cb(null); });
+}
+
