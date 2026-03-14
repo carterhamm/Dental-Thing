@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     # Option 1: Base64-encoded service account (Railway)
     sa_base64 = os.environ.get("FIREBASE_SERVICE_ACCOUNT_BASE64")
     if sa_base64:
-        sa_dict = json.loads(base64.b64decode(sa_base64))
+        sa_dict = json.loads(base64.b64decode(sa_base64), strict=False)
         init_firestore(sa_dict)
         print("Firebase initialized from FIREBASE_SERVICE_ACCOUNT_BASE64")
     else:
