@@ -295,7 +295,12 @@ class Orchestrator:
         return ""
 
     def start(self, slot: dict) -> str:
-        """Start the agent for a cancelled slot."""
+        """Start the agent for a cancelled slot.
+
+        FAST PATH: Ranks candidates and initiates the first call immediately
+        using the deterministic brain logic — no Claude API calls needed.
+        Claude is only invoked later when an outcome arrives.
+        """
         self.slot = slot
         self.candidates = []
         self.current_index = -1
@@ -304,10 +309,45 @@ class Orchestrator:
         update_slot_status("filling")
         add_activity("event", f"Cancellation detected — {slot['time']} {slot['treatment']} (${slot['value']})")
 
+        # Score candidates instantly (deterministic brain logic, no API call)
+        self.candidates = score_candidates(RECALL_LIST, slot)
+        update_candidates(self.candidates)
+        add_activity("event", f"Ranked {len(self.candidates)} candidates for {slot['time']} {slot['treatment']}")
+
+        # Log top 3 for the dashboard
+        top = self.candidates[:3]
+        top_summary = "; ".join(
+            f"#{c['rank']} {c['name']} (score {c['score']})" for c in top
+        )
+        add_activity("thinking", f"Top candidates: {top_summary}")
+
+        # Get first action from brain (always "call", 0 for a fresh list)
+        action, candidate_idx = get_next_action(self.candidates, -1)
+        self.current_index = candidate_idx
+
+        if action == "call" and 0 <= candidate_idx < len(self.candidates):
+            candidate = self.candidates[candidate_idx]
+            self.candidates = update_candidate_status(
+                self.candidates, candidate_idx, "calling"
+            )
+            update_candidates(self.candidates)
+            add_activity(
+                "thinking",
+                f"Calling {candidate['name']} first — highest score, best match for this slot.",
+            )
+            add_activity(
+                "tool_call",
+                f"Calling {candidate['name']} ({candidate['phone']})...",
+            )
+            if self.on_voice_call:
+                self.on_voice_call(candidate)
+            return f"Voice call initiated to {candidate['name']}. Waiting for outcome."
+
+        # Fallback for edge cases (empty list, etc.) — let Claude handle it
         return self.run_step(
             f"A patient cancelled their {slot['treatment']} appointment at {slot['time']}. "
             f"Slot value: ${slot['value']}. Date: {slot['date']}. "
-            f"Fill this slot. Rank candidates, explain your reasoning, then start contacting."
+            f"Candidates already ranked. Decide next action."
         )
 
     def handle_outcome(self, candidate_name: str, outcome: str) -> str:

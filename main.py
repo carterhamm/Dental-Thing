@@ -482,36 +482,56 @@ def trigger_voice_call(patient: dict):
             ).start()
 
 
-def _parse_call_outcome(call_successful: str, transcript_summary: str) -> str:
+def _parse_call_outcome(
+    call_successful: str,
+    transcript_summary: str,
+    full_transcript_text: str,
+    data_collection: dict,
+) -> str:
     """Parse ElevenLabs call analysis into confirmed/declined/no_answer.
 
     ElevenLabs' call_successful means the call *completed*, NOT that the
-    appointment was confirmed. We must check the transcript for the actual outcome.
+    appointment was confirmed. We check EVERYTHING — summary, full transcript,
+    and data collection results — before deciding.
     """
-    summary_lower = transcript_summary.lower()
+    # Combine summary + full transcript for comprehensive checking
+    all_text = f"{transcript_summary} {full_transcript_text}".lower()
+    print(f"[PARSE] call_successful={call_successful!r}")
+    print(f"[PARSE] all_text length={len(all_text)}")
+    print(f"[PARSE] data_collection={data_collection}")
 
-    # 1. Voicemail — treat as no_answer (nobody picked up)
+    # Normalize call_successful (ElevenLabs uses different formats)
+    cs = str(call_successful).lower().strip()
+    is_successful = cs in ("success", "true", "yes")
+
+    # --- REJECTION CHECKS (any match → NOT confirmed) ---
+
+    # 1. Voicemail
     voicemail_phrases = [
         "voicemail", "voice mail", "leave a message", "mailbox",
         "after the beep", "after the tone", "not available to take",
         "please leave", "no one answered", "went to voicemail",
+        "recording", "answering machine",
     ]
-    if any(phrase in summary_lower for phrase in voicemail_phrases):
-        print(f"[PARSE] Detected VOICEMAIL in transcript")
+    if any(phrase in all_text for phrase in voicemail_phrases):
+        print(f"[PARSE] → VOICEMAIL detected")
         return "no_answer"
 
-    # 2. Wrong number — treat as no_answer (not the right person)
+    # 2. Wrong number
     wrong_number_phrases = [
         "wrong number", "wrong person", "not the right person",
         "who is this", "you have the wrong", "no one by that name",
         "doesn't live here", "not here", "don't know who",
-        "never heard of", "no such person",
+        "never heard of", "no such person", "not who you",
+        "i'm not", "i am not", "that's not me", "thats not me",
+        "you've got the wrong", "you got the wrong",
+        "i don't know any", "don't know any",
     ]
-    if any(phrase in summary_lower for phrase in wrong_number_phrases):
-        print(f"[PARSE] Detected WRONG NUMBER in transcript")
+    if any(phrase in all_text for phrase in wrong_number_phrases):
+        print(f"[PARSE] → WRONG NUMBER detected")
         return "no_answer"
 
-    # 3. Explicit decline — person answered but can't/won't take the appointment
+    # 3. Explicit decline
     decline_phrases = [
         "can't make it", "cannot make it", "can't do", "cannot do",
         "not available", "doesn't work", "won't work", "i'm busy",
@@ -521,32 +541,52 @@ def _parse_call_outcome(call_successful: str, transcript_summary: str) -> str:
         "doesn't suit", "i have plans", "already have",
         "refused", "said no", "patient declined", "they declined",
         "did not confirm", "unable to confirm", "not confirm",
-        "did not accept", "not able to make",
+        "did not accept", "not able to make", "no i",
+        "that won't", "that will not", "i will not",
+        "don't want", "do not want", "not for me",
     ]
-    if any(phrase in summary_lower for phrase in decline_phrases):
-        print(f"[PARSE] Detected DECLINE in transcript")
+    if any(phrase in all_text for phrase in decline_phrases):
+        print(f"[PARSE] → DECLINE detected")
         return "declined"
 
-    # 4. Explicit confirmation — person confirmed the appointment
-    confirm_phrases = [
-        "confirmed", "booked", "i'll be there", "i'll take it",
-        "sounds good", "see you then", "accepted the appointment",
-        "i can make it", "that works", "i'll come in",
-        "appointment confirmed", "agreed to", "patient accepted",
-        "patient confirmed", "they confirmed", "said yes",
-        "scheduled the appointment", "appointment was scheduled",
-    ]
-    has_confirmation = any(phrase in summary_lower for phrase in confirm_phrases)
+    # 4. Check data_collection_results for structured confirmation/denial
+    for key, val in data_collection.items():
+        result = str(val.get("result", "") if isinstance(val, dict) else val).lower()
+        if "confirmed" in key.lower() or "accepted" in key.lower() or "booked" in key.lower():
+            if result in ("false", "failure", "no", "failed"):
+                print(f"[PARSE] → DECLINE from data_collection[{key}]={result}")
+                return "declined"
 
-    if call_successful == "success" and has_confirmation:
-        print(f"[PARSE] Detected CONFIRMED (call_successful + transcript match)")
+    # --- CONFIRMATION CHECK (must pass ALL gates) ---
+
+    confirm_phrases = [
+        "confirmed the appointment", "appointment confirmed",
+        "agreed to come in", "patient accepted", "patient confirmed",
+        "they confirmed", "booked the appointment", "appointment booked",
+        "appointment was scheduled", "scheduled the appointment",
+        "accepted the appointment", "will attend",
+    ]
+    has_strong_confirmation = any(phrase in all_text for phrase in confirm_phrases)
+
+    # Also check data_collection for structured confirmation
+    has_data_confirmation = False
+    for key, val in data_collection.items():
+        result = str(val.get("result", "") if isinstance(val, dict) else val).lower()
+        if "confirmed" in key.lower() or "accepted" in key.lower() or "booked" in key.lower():
+            if result in ("true", "success", "yes"):
+                has_data_confirmation = True
+                break
+
+    if is_successful and (has_strong_confirmation or has_data_confirmation):
+        print(f"[PARSE] → CONFIRMED (call_successful + strong confirmation evidence)")
         return "confirmed"
-    elif call_successful == "success":
-        # ElevenLabs said "success" but transcript has no clear confirmation.
-        # Be conservative — don't auto-book. Let the agent follow up via SMS.
-        print(f"[PARSE] call_successful=success but NO confirmation in transcript — treating as no_answer")
+    elif is_successful:
+        # Call "succeeded" per ElevenLabs but no strong confirmation found.
+        # DO NOT auto-book. Fall through to SMS follow-up.
+        print(f"[PARSE] → NO_ANSWER (call_successful but no confirmation evidence in transcript)")
         return "no_answer"
     else:
+        print(f"[PARSE] → NO_ANSWER (call_successful={call_successful!r})")
         return "no_answer"
 
 
@@ -579,16 +619,29 @@ def _poll_call_outcome(conversation_id: str, patient_name: str, session_id: str)
             if status not in ("done", "failed"):
                 continue
 
-            # Call is over — determine outcome from analysis
+            # Call is over — extract ALL available data for outcome parsing
             analysis = data.get("analysis", {})
             call_successful = analysis.get("call_successful", "")
             transcript_summary = analysis.get("transcript_summary", "")
+            data_collection = analysis.get("data_collection_results", {})
+
+            # Get FULL transcript text (not just summary)
+            transcript_entries = data.get("transcript", [])
+            full_transcript_text = " ".join(
+                entry.get("message", "")
+                for entry in transcript_entries
+                if isinstance(entry, dict)
+            )
 
             print(f"[POLL] Call ended: status={status}, successful={call_successful}")
             print(f"[POLL] Summary: {transcript_summary}")
+            print(f"[POLL] Full transcript ({len(transcript_entries)} entries): {full_transcript_text[:500]}")
+            print(f"[POLL] Data collection: {data_collection}")
 
-            outcome = _parse_call_outcome(call_successful, transcript_summary)
-            print(f"[POLL] Parsed outcome: {outcome}")
+            outcome = _parse_call_outcome(
+                call_successful, transcript_summary, full_transcript_text, data_collection
+            )
+            print(f"[POLL] Final parsed outcome: {outcome}")
 
             # Only post if session is still current
             if _session_id == session_id:
